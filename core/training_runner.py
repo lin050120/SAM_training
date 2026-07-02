@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -56,11 +57,25 @@ class TrainingPreflight:
     config_exists: bool
     is_default_authoritative_config: bool
     warning: str | None
+    # train_batch_size / gradient_accumulation_steps / effective_batch_size below are the
+    # *resolved* values (override if valid and given, else the authoritative base YAML
+    # value) — this is what will actually run, matching requirement "预检必须显示最终
+    # resolved 值". The requested_* counterparts capture what the user asked for, so a
+    # mismatch (e.g. an invalid override that fell back to base) stays visible.
     train_batch_size: int | None
     num_gpus: int
     gradient_accumulation_steps: int | None
     trainer_gradient_accumulation_steps: int | None
     effective_batch_size: int | None
+    max_epochs: int | None
+    learning_rate: float | None
+    num_workers: int | None
+    requested_max_epochs: int | None
+    requested_train_batch_size: int | None
+    requested_gradient_accumulation_steps: int | None
+    requested_learning_rate: float | None
+    requested_num_workers: int | None
+    unsupported_overrides: list[str]
     initial_checkpoint: str | None
     bpe_path: str | None
     train_images: str | None
@@ -93,6 +108,51 @@ def _same_file_or_path(a: Path, b: Path) -> bool:
 def _select_int(cfg: Any, key: str) -> int | None:
     value = OmegaConf.select(cfg, key)
     return int(value) if value is not None else None
+
+
+def _select_float(cfg: Any, key: str) -> float | None:
+    # throw_on_resolution_failure=False: scratch.lr_transformer is
+    # ${times:8e-4,${scratch.lr_scale}} in the base YAML, using a custom "times"
+    # OmegaConf resolver registered by sam3.train.utils.register_omegaconf_resolvers()
+    # at real training-launch time. Preflight does not import that (heavy torch/hydra
+    # module, and this codebase should not guess its multiply_all() semantics), so an
+    # unresolvable interpolation is reported as None rather than raising or guessing.
+    value = OmegaConf.select(cfg, key, throw_on_resolution_failure=False)
+    return float(value) if value is not None else None
+
+
+def _validate_positive_override(
+    value: Any, name: str, kind: str = "int", allow_zero: bool = False
+) -> tuple[Any, str | None]:
+    """Validate a caller-supplied training param override.
+
+    None means "no override requested" and passes through untouched (the caller
+    falls back to the base YAML value). This exists independently of
+    ui/ui_utils.py's parser: core.training_runner is also called directly by
+    scripts/training_preflight.py, so it must not trust an already-clean value from
+    the UI layer — a CLI caller could pass -5 or NaN directly.
+
+    allow_zero=True is for num_workers: 0 is PyTorch DataLoader's documented value
+    for "load in the main process" and is exactly what the base YAML already uses
+    for scratch.num_val_workers, so it must not be treated as invalid.
+    """
+    if value is None:
+        return None, None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None, f"{name} is not a valid number: {value!r}"
+    if not math.isfinite(number):
+        return None, f"{name} must be a finite number, got {value!r}"
+    if kind == "int":
+        if number != int(number):
+            return None, f"{name} must be a whole number, got {number}"
+        number = int(number)
+    minimum_ok = number >= 0 if allow_zero else number > 0
+    if not minimum_ok:
+        bound = "non-negative" if allow_zero else "positive"
+        return None, f"{name} must be a {bound} number, got {number}"
+    return number, None
 
 
 def _resolve_existing_or_absolute(path: Path) -> Path:
@@ -248,7 +308,41 @@ def write_runtime_yaml(
     run_dir: Path,
     category_id: int | None = None,
     training_prompt: str | None = None,
+    max_epochs: int | None = None,
+    train_batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
+    learning_rate: float | None = None,
+    num_workers: int | None = None,
 ) -> None:
+    """Render the base authoritative YAML into a per-run runtime YAML.
+
+    The base YAML is only ever read here, never written. Only fields explicitly
+    passed as non-None are touched — e.g. scratch.lr_transformer is an interpolated
+    expression (${times:8e-4,${scratch.lr_scale}}) in the base config, and leaving
+    it untouched when learning_rate is None preserves that interpolation instead of
+    collapsing it to a literal for no reason.
+
+    Field mapping confirmed against book_spine_finetune.yaml (not guessed):
+      max_epochs                  -> trainer.max_epochs
+      train_batch_size            -> scratch.train_batch_size (feeds
+                                      trainer.data.train.batch_size via interpolation)
+      gradient_accumulation_steps -> scratch.gradient_accumulation_steps (feeds
+                                      trainer.gradient_accumulation_steps)
+      learning_rate                -> scratch.lr_transformer (the trainable
+                                      transformer/decoder LR fed to the optimizer's
+                                      scheduler as base_lr)
+      num_workers                  -> scratch.num_train_workers only. The val
+                                      dataloader (scratch.num_val_workers) is left at
+                                      its base value (0) — the val split is tiny (2
+                                      images per docs/training_path_audit.md) and val
+                                      workers were not part of what the user asked to
+                                      control.
+
+    Deliberately NOT exposed: scratch.lr_vision_backbone / scratch.lr_language_backbone.
+    The base YAML freezes both at 0.0 on purpose (see its "冻结策略" comment) to keep
+    the vision backbone and text prompt frozen; a generic "learning_rate" override must
+    not silently unfreeze them.
+    """
     cfg = OmegaConf.load(base_config)
     dataset_root = DEFAULT_BOOK_SPINE_DATASET_ROOT.resolve(strict=False)
     OmegaConf.update(cfg, "paths.dataset_root", str(dataset_root), merge=False)
@@ -268,6 +362,16 @@ def write_runtime_yaml(
     OmegaConf.update(cfg, "trainer.checkpoint.save_dir", str(run_dir / "checkpoints"), merge=False)
     OmegaConf.update(cfg, "trainer.logging.tensorboard_writer.log_dir", str(run_dir / "tensorboard"), merge=False)
     OmegaConf.update(cfg, "trainer.logging.log_dir", str(run_dir / "logs" / "book_spine"), merge=False)
+    if max_epochs is not None:
+        OmegaConf.update(cfg, "trainer.max_epochs", int(max_epochs), merge=False)
+    if train_batch_size is not None:
+        OmegaConf.update(cfg, "scratch.train_batch_size", int(train_batch_size), merge=False)
+    if gradient_accumulation_steps is not None:
+        OmegaConf.update(cfg, "scratch.gradient_accumulation_steps", int(gradient_accumulation_steps), merge=False)
+    if num_workers is not None:
+        OmegaConf.update(cfg, "scratch.num_train_workers", int(num_workers), merge=False)
+    if learning_rate is not None:
+        OmegaConf.update(cfg, "scratch.lr_transformer", float(learning_rate), merge=False)
     runtime_config.parent.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(cfg, runtime_config)
 
@@ -283,6 +387,11 @@ def inspect_training_config(
     val_images: Path | None = None,
     val_annotations: Path | None = None,
     training_prompt: str | None = None,
+    max_epochs: int | None = None,
+    train_batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
+    learning_rate: float | None = None,
+    num_workers: int | None = None,
     output_root: Path = DEFAULT_TRAINING_RUN_ROOT,
     allow_external_output: bool = False,
     prepare_runtime: bool = True,
@@ -301,8 +410,34 @@ def inspect_training_config(
     if warning:
         warnings.append(warning)
 
-    train_batch_size = None
-    accumulation = None
+    # Validate optional overrides independently of whether the base config exists:
+    # core.training_runner is also invoked directly by scripts/training_preflight.py,
+    # so a caller could pass an invalid raw value even after the UI layer's own parsing.
+    # None means "no override requested" and always falls back to the base YAML value.
+    validated_max_epochs, err = _validate_positive_override(max_epochs, "max_epochs", "int")
+    if err:
+        errors.append(err)
+    validated_train_batch_size, err = _validate_positive_override(train_batch_size, "train_batch_size", "int")
+    if err:
+        errors.append(err)
+    validated_gradient_accumulation_steps, err = _validate_positive_override(
+        gradient_accumulation_steps, "gradient_accumulation_steps", "int"
+    )
+    if err:
+        errors.append(err)
+    validated_learning_rate, err = _validate_positive_override(learning_rate, "learning_rate", "float")
+    if err:
+        errors.append(err)
+    validated_num_workers, err = _validate_positive_override(num_workers, "num_workers", "int", allow_zero=True)
+    if err:
+        errors.append(err)
+    unsupported_overrides: list[str] = []
+
+    resolved_max_epochs = None
+    resolved_train_batch_size = None
+    resolved_gradient_accumulation_steps = None
+    resolved_learning_rate = None
+    resolved_num_workers = None
     trainer_accumulation = None
     effective = None
     runtime_config_path = None
@@ -321,11 +456,38 @@ def inspect_training_config(
         errors.append(f"base config does not exist: {base_config}")
     else:
         cfg = OmegaConf.load(base_config)
-        train_batch_size = _select_int(cfg, "scratch.train_batch_size")
-        accumulation = _select_int(cfg, "scratch.gradient_accumulation_steps")
+        base_max_epochs = _select_int(cfg, "trainer.max_epochs")
+        base_train_batch_size = _select_int(cfg, "scratch.train_batch_size")
+        base_gradient_accumulation_steps = _select_int(cfg, "scratch.gradient_accumulation_steps")
+        base_learning_rate = _select_float(cfg, "scratch.lr_transformer")
+        base_num_workers = _select_int(cfg, "scratch.num_train_workers")
         trainer_accumulation = _select_int(cfg, "trainer.gradient_accumulation_steps")
-        if train_batch_size is not None and accumulation is not None:
-            effective = train_batch_size * num_gpus * accumulation
+
+        # Resolved = validated override if the user gave one, else the authoritative
+        # base YAML value. Never 0/NaN/empty-string: an invalid override was already
+        # turned into an error above and validated_* is None in that case, so it falls
+        # back to the base value here rather than propagating a bad number.
+        resolved_max_epochs = validated_max_epochs if validated_max_epochs is not None else base_max_epochs
+        resolved_train_batch_size = (
+            validated_train_batch_size if validated_train_batch_size is not None else base_train_batch_size
+        )
+        resolved_gradient_accumulation_steps = (
+            validated_gradient_accumulation_steps
+            if validated_gradient_accumulation_steps is not None
+            else base_gradient_accumulation_steps
+        )
+        resolved_learning_rate = validated_learning_rate if validated_learning_rate is not None else base_learning_rate
+        resolved_num_workers = validated_num_workers if validated_num_workers is not None else base_num_workers
+        if resolved_learning_rate is None:
+            warnings.append(
+                "base learning rate (scratch.lr_transformer) uses a custom OmegaConf "
+                "resolver not registered during preflight, so its value cannot be "
+                "displayed unless you set an explicit learning_rate override; the "
+                "authoritative base YAML expression is left untouched either way."
+            )
+
+        if resolved_train_batch_size is not None and resolved_gradient_accumulation_steps is not None:
+            effective = resolved_train_batch_size * num_gpus * resolved_gradient_accumulation_steps
         resolved_paths = _resolve_training_inputs(
             cfg,
             initial_checkpoint,
@@ -402,6 +564,11 @@ def inspect_training_config(
                 run_dir,
                 category_id=coco_category_id,
                 training_prompt=resolved_training_prompt if training_prompt else None,
+                max_epochs=validated_max_epochs,
+                train_batch_size=validated_train_batch_size,
+                gradient_accumulation_steps=validated_gradient_accumulation_steps,
+                learning_rate=validated_learning_rate,
+                num_workers=validated_num_workers,
             )
             command_config = runtime_config_path
 
@@ -437,6 +604,16 @@ def inspect_training_config(
             "requested_training_prompt": training_prompt,
             "resolved_training_prompt": resolved_training_prompt,
             "prompt_source": prompt_source,
+            "requested_max_epochs": max_epochs,
+            "resolved_max_epochs": resolved_max_epochs,
+            "requested_train_batch_size": train_batch_size,
+            "resolved_train_batch_size": resolved_train_batch_size,
+            "requested_gradient_accumulation_steps": gradient_accumulation_steps,
+            "resolved_gradient_accumulation_steps": resolved_gradient_accumulation_steps,
+            "requested_learning_rate": learning_rate,
+            "resolved_learning_rate": resolved_learning_rate,
+            "requested_num_workers": num_workers,
+            "resolved_num_workers": resolved_num_workers,
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
         (run_dir / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
@@ -447,11 +624,20 @@ def inspect_training_config(
         config_exists=exists,
         is_default_authoritative_config=is_default,
         warning=warning,
-        train_batch_size=train_batch_size,
+        train_batch_size=resolved_train_batch_size,
         num_gpus=num_gpus,
-        gradient_accumulation_steps=accumulation,
+        gradient_accumulation_steps=resolved_gradient_accumulation_steps,
         trainer_gradient_accumulation_steps=trainer_accumulation,
         effective_batch_size=effective,
+        max_epochs=resolved_max_epochs,
+        learning_rate=resolved_learning_rate,
+        num_workers=resolved_num_workers,
+        requested_max_epochs=max_epochs,
+        requested_train_batch_size=train_batch_size,
+        requested_gradient_accumulation_steps=gradient_accumulation_steps,
+        requested_learning_rate=learning_rate,
+        requested_num_workers=num_workers,
+        unsupported_overrides=unsupported_overrides,
         initial_checkpoint=str(resolved_paths.get("initial_checkpoint")) if resolved_paths else None,
         bpe_path=str(resolved_paths.get("bpe_path")) if resolved_paths else None,
         train_images=str(resolved_paths.get("train_images")) if resolved_paths else None,

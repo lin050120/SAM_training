@@ -573,7 +573,7 @@ class TrainingPreflightCallTest(unittest.TestCase):
         from core.config import DEFAULT_BOOK_SPINE_FINETUNE_CONFIG, DEFAULT_SAM3_CHECKPOINT
 
         with tempfile.TemporaryDirectory() as tmp:
-            result_text = run_training_preflight(
+            result_text, state, status = run_training_preflight(
                 config_path=str(DEFAULT_BOOK_SPINE_FINETUNE_CONFIG),
                 train_images="",
                 train_annotations="",
@@ -582,7 +582,12 @@ class TrainingPreflightCallTest(unittest.TestCase):
                 checkpoint=str(DEFAULT_SAM3_CHECKPOINT),
                 training_prompt="book spine",
                 output_root=str(Path(tmp) / "training_runs"),
-                num_gpus=1,
+                max_epochs="",
+                train_batch_size="",
+                gradient_accumulation_steps="",
+                learning_rate="",
+                num_workers="",
+                num_gpus="1",
             )
             self.assertNotIn("Traceback", result_text)
 

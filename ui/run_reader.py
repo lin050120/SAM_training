@@ -307,12 +307,18 @@ def list_training_runs(training_root: Path) -> list[dict[str, Any]]:
     for run_dir in sorted((p for p in training_root.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True):
         info, _ = safe_read_json(run_dir / "dataset_info.json")
         command_path = run_dir / "command.txt"
+        # training_summary.json only exists once a training run has actually stopped
+        # (completed/failed/cancelled); preflight-only runs (stage D1/E1 preflight
+        # without launching training) simply have no summary yet, not an error.
+        summary, _ = safe_read_json(run_dir / "training_summary.json")
         rows.append(
             {
                 "run_id": run_dir.name,
                 "root": str(run_dir),
                 "dataset_info": info,
                 "command": command_path.read_text(encoding="utf-8").strip() if command_path.exists() else None,
+                "training_summary": summary,
+                "status": summary.get("status") if summary else "preflight_only_or_unknown",
             }
         )
     return rows

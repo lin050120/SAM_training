@@ -1,10 +1,19 @@
 # Book Spine SAM3 Workflow
 
-## Local Web UI (Stage D1)
+## Local Web UI (Stage D1 / D1.1 / E1)
 
 A local Gradio UI wraps the existing CLI workflow (inference, history browsing, result
-viewing, CVAT export, training preflight) without reimplementing any of it. See
-`docs/stage_d_ui.md` for full details.
+viewing, CVAT export, training preflight and orchestration) without reimplementing any
+of it. See `docs/stage_d_ui.md` (D1/D1.1) and `docs/stage_e1_training_ui.md` (E1
+training orchestration and monitoring) for full details.
+
+The training tab is a two-stage flow: preflight generates and validates a runtime
+config without starting anything; a start button (gated server-side, not just a
+disabled widget) launches the real `sam3/train/train.py` entry point only once
+preflight passed, the checkpoint/data/runtime YAML all exist, no other training task
+is running, CUDA is available, and the user has explicitly confirmed. Editing any
+preflight input invalidates the stored preflight result immediately, so a stale
+runtime YAML can never be used to start training.
 
 ```bash
 conda run -n sam3 python /home/book/book01/app.py

@@ -47,6 +47,22 @@ class ProcessManager:
         with self._lock:
             return self._state.running
 
+    @property
+    def pid(self) -> int | None:
+        return self._process.pid if self._process is not None else None
+
+    @property
+    def pgid(self) -> int | None:
+        """Process group id of the active/last child; equals pid on POSIX since
+        start_new_session=True makes the child its own group leader. None once the
+        process has exited and its pgid can no longer be queried."""
+        if self._process is None:
+            return None
+        try:
+            return os.getpgid(self._process.pid)
+        except (ProcessLookupError, OSError):
+            return None
+
     def start(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
         if self.is_running():
             raise RuntimeError("A task is already running. Stop it before starting a new one.")

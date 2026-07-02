@@ -261,6 +261,15 @@ CUDA 诊断:
 - 有意思的发现: 本轮在 Claude Code 会话内直接检测到真实 GPU（`nvidia-smi` 正常，`torch.cuda.is_available()=True`，`NVIDIA GeForce RTX 5090`），和此前 Codex 会话中 GPU 不可见的情况不同；但本轮仍然没有主动运行真实 SAM3 推理或训练，只做了环境检测。
 - 详见 `docs/stage_d_ui.md`。
 
+## 23b. 阶段 E1: 一键训练编排与监控
+
+- 在阶段 D1.1 完成人工浏览器验收后，在新分支 `claude-stage-e1` 上进行（`claude-stage-d` 已提交 baseline+D1/D1.1 后创建此分支）。
+- 扩展 `core/training_runner.py::inspect_training_config()`/`write_runtime_yaml()`，新增 `max_epochs`/`train_batch_size`/`gradient_accumulation_steps`/`learning_rate`/`num_workers` 覆盖，全部对照真实 YAML 字段路径确认（不是猜测的），详见 `docs/stage_e1_training_ui.md` 第 2 节。`scratch.lr_transformer` 用到 SAM3 自定义的 `times` OmegaConf resolver，预检没有注册这个 resolver（避免引入沉重的 torch/hydra 依赖），未覆盖时该值展示为 `null` 并附 warning，而不是猜测或手算。
+- 新增 `ui/training_process_manager.py`：复用 `ui/process_manager.py::ProcessManager`（同一套进程组管理机制），新增训练专属的状态判定（completed/failed/cancelled）、日志指标 best-effort 解析（未经真实训练日志验证）、`training_summary.json` 生成、`validate_can_start_training()` 纯函数式启动前置条件校验。
+- `ui/training_preflight_page.py` 从单阶段预检改为两阶段（预检 + 启动），参数修改会让服务端保存的预检状态立即失效，启动前置条件在服务端强制校验，不只是前端按钮禁用。
+- 新增 42 个测试（`tests/test_e1_training.py`），全部使用假 `python3 -c` 命令，未启动 SAM3、未使用 GPU、未产生真实 checkpoint。
+- 详见 `docs/stage_e1_training_ui.md`。
+
 ## 23. 训练配置预检结果
 
 预检命令:

@@ -22,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-images", type=Path, default=None)
     parser.add_argument("--val-annotations", type=Path, default=None)
     parser.add_argument("--training-prompt", default=None)
+    parser.add_argument("--max-epochs", type=float, default=None)
+    parser.add_argument("--train-batch-size", type=float, default=None)
+    parser.add_argument("--gradient-accumulation-steps", type=float, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--num-workers", type=float, default=None)
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--allow-external-output", action="store_true")
     parser.add_argument("--no-prepare-runtime", action="store_true", help="Only inspect; do not create runtime YAML/run dir.")
@@ -39,6 +44,11 @@ def main() -> None:
         "val_images": args.val_images,
         "val_annotations": args.val_annotations,
         "training_prompt": args.training_prompt,
+        "max_epochs": args.max_epochs,
+        "train_batch_size": args.train_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "num_workers": args.num_workers,
         "allow_external_output": args.allow_external_output,
         "prepare_runtime": not args.no_prepare_runtime,
     }

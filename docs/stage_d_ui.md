@@ -99,12 +99,14 @@ ui/
 - 支持 polygon / rle / both、重新导出、ZIP 打包、polygon fidelity 计算、NMS pair review 生成。NMS pair 通过下拉框选择（选项自动来自所选 run 的 manifest 记录，无需手填实例 ID）；选中 run 时自动展示已有的 review 信息。
 - 页面顶部固定显示格式说明: polygon 是有损转换，不适合精确评价；RLE 与最终 NMS mask 逐像素一致，但 **CVAT 的实际人工导入仍待用户手动确认**，页面不会显示"RLE 已成功导入 CVAT"这类结论。
 
-### 页面五: 训练预检
+### 页面五: 训练预检 + 训练编排（阶段 E1 已扩展，见下方说明）
 
-- 页面顶部固定横幅: "本页面只生成和验证训练配置，不会启动 SAM3 训练。"
-- 输入: authoritative config / checkpoint / train images / train COCO / val images / val COCO / training prompt / output root / num_gpus——这些都是 `core.training_runner.inspect_training_config()` 当前实际支持的参数。
-- **已知限制**: `max_epochs`/`batch size`/`gradient accumulation`/`learning rate`/`num_workers` 目前**不能**从这个页面覆盖，因为 `inspect_training_config()` 本身还没有开放这些参数的写入接口；页面上只读展示从权威 YAML 解析出的 `train_batch_size`/`gradient_accumulation_steps`/`effective_batch_size`。没有为了凑齐交接文档列的输入项而在 UI 层另起一套训练配置逻辑——如果要支持这些覆盖，应该先在 `core/training_runner.py` 加参数，而不是在 UI 里重复实现。
-- 点击"运行训练预检"直接调用 `inspect_training_config(..., prepare_runtime=True)`，只生成 runtime YAML / `dataset_info.json` / `command.txt` 并展示最终训练命令，**没有任何"开始训练"按钮**。
+> 本节描述阶段 D1 的原始状态。阶段 E1 已经把这个页面从单阶段预检扩展为"预检 + 一键启动训练 + 训练监控"两阶段流程，并新增了 `max_epochs`/`train_batch_size`/`gradient_accumulation_steps`/`learning_rate`/`num_workers` 覆盖（此前的"已知限制"已解除）。**完整的最新说明见 `docs/stage_e1_training_ui.md`**，这里只保留 D1 阶段的历史记录。
+
+- 页面顶部固定横幅: "本页面只生成和验证训练配置，不会启动 SAM3 训练。"（阶段 E1 已改为"必须先完成训练预检，预检通过后才能启动训练。"，因为页面现在确实提供启动入口）
+- D1 阶段输入: authoritative config / checkpoint / train images / train COCO / val images / val COCO / training prompt / output root / num_gpus——这些是当时 `core.training_runner.inspect_training_config()` 实际支持的参数。
+- D1 阶段已知限制（**阶段 E1 已解除**）: `max_epochs`/`batch size`/`gradient accumulation`/`learning rate`/`num_workers` 当时不能从页面覆盖。
+- D1 阶段点击"运行训练预检"直接调用 `inspect_training_config(..., prepare_runtime=True)`，只生成 runtime YAML / `dataset_info.json` / `command.txt` 并展示最终训练命令，**没有任何"开始训练"按钮**（阶段 E1 新增了受服务端强制校验保护的启动按钮，见 `docs/stage_e1_training_ui.md`）。
 
 ## 6. 推理命令如何执行
 
