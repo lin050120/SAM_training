@@ -51,6 +51,7 @@ def main() -> None:
         "num_workers": args.num_workers,
         "allow_external_output": args.allow_external_output,
         "prepare_runtime": not args.no_prepare_runtime,
+        "collect_import_metadata": not args.no_prepare_runtime,
     }
     if args.output_root is not None:
         kwargs["output_root"] = args.output_root

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,9 @@ from core.config import (
     DEFAULT_BOOK_SPINE_DATASET_ROOT,
     DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
     DEFAULT_CONDA_ENV,
+    EXPECTED_SAM3_INIT,
+    EXPECTED_SAM3_PACKAGE_DIR,
+    EXPECTED_SAM3_ROOT,
     DEFAULT_SAM3_BPE_PATH,
     DEFAULT_SAM3_CHECKPOINT,
     DEFAULT_SAM3_TRAIN_SCRIPT,
@@ -92,6 +96,13 @@ class TrainingPreflight:
     prompt_source: str | None
     output_root: str
     run_dir: str | None
+    conda_environment: str
+    expected_sam3_root: str
+    expected_sam3_package_dir: str
+    resolved_sam3_import_path: str | None
+    sam3_import_guard_ok: bool | None
+    sam3_import_guard_error: str | None
+    effective_pythonpath: str | None
     command: list[str]
     path_checks: list[PathCheck]
     train_coco: CocoSummary | None
@@ -195,6 +206,110 @@ def validate_training_output_root(path: Path, allow_external_output: bool = Fals
 
 def validate_training_run_path(path: Path, allow_external_output: bool = False) -> str | None:
     return validate_training_output_root(path, allow_external_output=allow_external_output)
+
+
+def training_subprocess_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for SAM3 trainer subprocesses.
+
+    The sam301 conda environment is the primary source of truth. PYTHONPATH is still
+    prefixed defensively for child processes so an accidental future editable-package
+    regression cannot silently import /home/book/sam3. The caller's value is preserved
+    after the canonical source root, and os.environ is never mutated globally.
+    """
+    env = dict(base_env) if base_env is not None else os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    prefix = str(EXPECTED_SAM3_ROOT)
+    env["PYTHONPATH"] = prefix if not existing else f"{prefix}{os.pathsep}{existing}"
+    return env
+
+
+def validate_sam3_import_path(actual_path: str | Path | None) -> str | None:
+    if not actual_path:
+        return f"sam3 import guard produced no path; expected {EXPECTED_SAM3_INIT}"
+    try:
+        resolved_actual = Path(actual_path).expanduser().resolve(strict=False)
+    except TypeError:
+        return f"sam3 import path is not parseable: {actual_path!r}"
+    expected_init = EXPECTED_SAM3_INIT.expanduser().resolve(strict=False)
+    expected_package = EXPECTED_SAM3_PACKAGE_DIR.expanduser().resolve(strict=False)
+    if resolved_actual != expected_init:
+        try:
+            resolved_actual.relative_to(expected_package)
+        except ValueError:
+            pass
+        return f"sam3 import resolved to {resolved_actual}, expected {expected_init}"
+    return None
+
+
+def build_sam3_import_guard_command(conda_env: str = DEFAULT_CONDA_ENV) -> list[str]:
+    script = (
+        "from pathlib import Path\n"
+        "import json, sys\n"
+        "import sam3\n"
+        "print(json.dumps({'python': sys.executable, 'sam3': str(Path(sam3.__file__).resolve())}))\n"
+    )
+    return ["conda", "run", "-n", conda_env, "python", "-c", script]
+
+
+def run_sam3_import_guard(
+    conda_env: str = DEFAULT_CONDA_ENV,
+    cwd: Path = BOOK_ROOT,
+    env: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    command = build_sam3_import_guard_command(conda_env)
+    effective_env = env if env is not None else training_subprocess_env()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            env=effective_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "command": command,
+            "python": None,
+            "sam3": None,
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+            "error": f"sam3 import guard command failed: {exc!r}",
+        }
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    payload = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+            break
+        except json.JSONDecodeError:
+            continue
+    if completed.returncode != 0:
+        error = f"sam3 import guard exited with code {completed.returncode}"
+    elif payload is None:
+        error = "sam3 import guard did not emit parseable JSON"
+    else:
+        error = validate_sam3_import_path(payload.get("sam3"))
+    return {
+        "ok": error is None,
+        "command": command,
+        "python": payload.get("python") if isinstance(payload, dict) else None,
+        "sam3": payload.get("sam3") if isinstance(payload, dict) else None,
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": completed.returncode,
+        "error": error,
+    }
 
 
 def _path_kind(path: Path) -> str:
@@ -417,6 +532,7 @@ def inspect_training_config(
     output_root: Path = DEFAULT_TRAINING_RUN_ROOT,
     allow_external_output: bool = False,
     prepare_runtime: bool = True,
+    collect_import_metadata: bool = False,
 ) -> TrainingPreflight:
     warnings: list[str] = []
     errors: list[str] = []
@@ -477,6 +593,8 @@ def inspect_training_config(
     coco_category_name = None
     resolved_training_prompt = None
     prompt_source = None
+    import_guard_result: dict[str, Any] | None = None
+    effective_env = training_subprocess_env()
 
     if not exists:
         errors.append(f"base config does not exist: {base_config}")
@@ -591,6 +709,14 @@ def inspect_training_config(
 
         if prepare_runtime and run_dir.exists() and any(run_dir.iterdir()):
             errors.append(f"output directory already exists and is non-empty: {run_dir}")
+        if prepare_runtime and not errors and collect_import_metadata:
+            import_guard_result = run_sam3_import_guard(
+                conda_env=conda_env,
+                cwd=BOOK_ROOT,
+                env=effective_env,
+            )
+            if not import_guard_result.get("ok"):
+                errors.append(f"sam3 import guard failed: {import_guard_result.get('error')}")
         if prepare_runtime and not errors:
             write_runtime_yaml(
                 base_config,
@@ -626,6 +752,12 @@ def inspect_training_config(
         (run_dir / "logs").mkdir(parents=True, exist_ok=True)
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         dataset_info = {
+            "conda_environment": conda_env,
+            "expected_sam3_root": str(EXPECTED_SAM3_ROOT),
+            "expected_sam3_package_dir": str(EXPECTED_SAM3_PACKAGE_DIR),
+            "resolved_sam3_import_path": import_guard_result.get("sam3") if import_guard_result else None,
+            "sam3_import_guard_ok": import_guard_result.get("ok") if import_guard_result else None,
+            "effective_pythonpath": effective_env.get("PYTHONPATH"),
             "initial_checkpoint": str(resolved_paths["initial_checkpoint"]),
             "bpe_path": str(resolved_paths["bpe_path"]),
             "train_images": str(resolved_paths["train_images"]),
@@ -651,6 +783,34 @@ def inspect_training_config(
             "resolved_num_workers": resolved_num_workers,
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
+        training_config_summary = {
+            "run_id": run_dir.name,
+            "conda_environment": conda_env,
+            "expected_sam3_root": str(EXPECTED_SAM3_ROOT),
+            "expected_sam3_package_dir": str(EXPECTED_SAM3_PACKAGE_DIR),
+            "resolved_sam3_import_path": import_guard_result.get("sam3") if import_guard_result else None,
+            "sam3_import_guard_ok": import_guard_result.get("ok") if import_guard_result else None,
+            "sam3_import_guard_error": import_guard_result.get("error") if import_guard_result else None,
+            "effective_pythonpath": effective_env.get("PYTHONPATH"),
+            "base_config_path": str(base_config),
+            "runtime_config_path": str(runtime_config_path),
+            "command": command,
+            "max_epochs": resolved_max_epochs,
+            "train_batch_size": resolved_train_batch_size,
+            "gradient_accumulation_steps": resolved_gradient_accumulation_steps,
+            "effective_batch_size": effective,
+            "num_gpus": num_gpus,
+            "learning_rate": resolved_learning_rate,
+            "num_workers": resolved_num_workers,
+            "initial_checkpoint": str(resolved_paths["initial_checkpoint"]),
+            "output_directory": str(run_dir),
+            "requested_training_prompt": training_prompt,
+            "resolved_training_prompt": resolved_training_prompt,
+        }
+        (run_dir / "training_config_summary.json").write_text(
+            json.dumps(training_config_summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         (run_dir / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
 
     return TrainingPreflight(
@@ -687,6 +847,13 @@ def inspect_training_config(
         prompt_source=prompt_source,
         output_root=str(output_root),
         run_dir=str(run_dir) if run_dir else None,
+        conda_environment=conda_env,
+        expected_sam3_root=str(EXPECTED_SAM3_ROOT),
+        expected_sam3_package_dir=str(EXPECTED_SAM3_PACKAGE_DIR),
+        resolved_sam3_import_path=import_guard_result.get("sam3") if import_guard_result else None,
+        sam3_import_guard_ok=import_guard_result.get("ok") if import_guard_result else None,
+        sam3_import_guard_error=import_guard_result.get("error") if import_guard_result else None,
+        effective_pythonpath=effective_env.get("PYTHONPATH"),
         command=command,
         path_checks=path_checks,
         train_coco=train_coco,

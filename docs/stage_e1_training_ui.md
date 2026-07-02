@@ -62,14 +62,15 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 - 每次预检都在 `/home/book/book01/runs/training/<run_id>/` 下创建一个全新目录（时间戳命名，`core/training_runner.py::unique_training_run_dir()`），已存在且非空则直接报错，不会覆盖旧的训练 run。预检结果同时生成一次性的启动凭证；成功启动训练后该凭证立即失效，不能再次复用同一个 `run_id`、run directory 或 runtime YAML。
 - 该目录下写入：
   - `config/runtime_config.yaml`：本次实际会用的完整配置（基础 YAML 的深拷贝 + 各项覆盖）。
-  - `dataset_info.json`：解析后的绝对路径、COCO 摘要、`requested_*`/resolved 的所有覆盖参数。
+  - `dataset_info.json`：解析后的绝对路径、COCO 摘要、`requested_*`/resolved 的所有覆盖参数，以及 `sam301` 环境/import guard 元数据。
+  - `training_config_summary.json`：本次 run 的关键训练参数、Conda 环境、expected SAM3 root、resolved import path、最终命令和输出目录摘要。
   - `command.txt`：最终训练命令的文本形式。
   - `logs/`、`checkpoints/`：训练器会往这两个目录写文件（本轮预检阶段只是预先创建空目录）。
 - `output_root` 必须解析到 canonical training output root `/home/book/book01/runs/training` 本身或它的真实子目录下。后端使用 `Path.expanduser().resolve(strict=False)` 和 `Path.relative_to()` 做服务端 allowlist 校验，不使用字符串前缀判断；`/home/book/book01/runs/training_evil`、`..` 逃逸、指向外部的 symlink、`/tmp`、`/home/book/sam301`、数据目录和 checkpoint 目录都会被拒绝。路径错误时不会先创建外部目录。
 
 ## 4. 如何启动训练
 
-阶段 B 只有在以下条件**全部**满足时才会真正调用 `subprocess.Popen` 启动子进程（`ui/training_process_manager.py::validate_can_start_training()`，纯函数、可单测，是服务端强制执行的关卡，不是仅前端好看的禁用按钮）：
+阶段 B 只有在以下条件**全部**满足时才会真正调用 `subprocess.Popen` 启动子进程（`ui/training_process_manager.py::validate_can_start_training()` 和 import guard，是服务端强制执行的关卡，不是仅前端好看的禁用按钮）：
 
 1. 最近一次预检通过（`preflight_state["ok"] is True`）；
 2. 训练 run 目录存在；
@@ -82,7 +83,10 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 9. 请求的 `num_gpus` 不超过实际检测到的 GPU 数量；
 10. 本次预检启动凭证尚未被消费；
 11. run directory 中不存在 `training_summary.json`，且 `checkpoints/` 下没有已有 checkpoint 产物；
-12. run directory 和 runtime YAML 解析后仍位于 `/home/book/book01/runs/training` 下，runtime YAML 也必须位于本次 run directory 内。
+12. run directory 和 runtime YAML 解析后仍位于 `/home/book/book01/runs/training` 下，runtime YAML 也必须位于本次 run directory 内；
+13. 轻量 import guard 在与真实训练相同的 `sam301` Conda 环境、cwd 和子进程 env 下确认 `import sam3` 解析到 `/home/book/sam301/sam3/__init__.py`。
+
+训练子进程命令和 import guard 都使用统一配置中的 `DEFAULT_CONDA_ENV=sam301`。子进程会防御性设置 `PYTHONPATH=/home/book/sam301[:existing]`，但 `sam301` 环境本身在移除 `PYTHONPATH` 时也必须能正确导入 `/home/book/sam301/sam3`；如果 guard 失败，系统不会创建 trainer 进程。
 
 **任何一项不满足都会拒绝启动，并把所有不满足的原因一次性显示出来，不会启动一半再失败。**
 
@@ -93,7 +97,7 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 真正的训练命令仍然调用官方入口，是参数列表，不经过 shell：
 
 ```
-conda run -n sam3 python \
+conda run -n sam301 python \
   /home/book/sam301/sam3/train/train.py \
   -c <runtime_config.yaml> \
   --use-cluster 0 \
@@ -155,7 +159,7 @@ E1 P2 修复轮继续只使用假短进程和临时目录，验证服务端后�
 
 ### 12.1 UI 操作步骤
 
-1. 在普通终端（不是受限 agent 沙箱）执行 `conda run -n sam3 python /home/book/book01/app.py`，浏览器打开 `http://127.0.0.1:7860`，切到"训练预检"标签页。
+1. 在普通终端（不是受限 agent 沙箱）执行 `conda run -n sam301 python /home/book/book01/app.py`，浏览器打开 `http://127.0.0.1:7860`，切到"训练预检"标签页。
 2. 阶段 A 保持大部分字段默认值（默认数据集本身就很小：train 8 张图 186 个标注，val 2 张图 49 个标注，见 `docs/training_path_audit.md`），只把 `max_epochs` 填 `1`，`train_batch_size` 填 `1`，`gradient_accumulation_steps` 填 `1`（缩短单次迭代时间，effective batch size 会变成 1，仅用于验证流程通不通，不代表正式训练该用这个配置）。`output_root` 保持默认 `/home/book/book01/runs/training`（每次都会新建时间戳子目录，不会覆盖任何旧 run）。
 3. 点击"运行训练预检 (不会启动训练)"，确认返回的 JSON 里 `errors` 为空列表，记下 `run_dir`/`runtime_config_path`。
 4. 阶段 B 勾选"我确认这将启动 GPU 训练任务。"，点击"启动训练"。
@@ -168,7 +172,7 @@ E1 P2 修复轮继续只使用假短进程和临时目录，验证服务端后�
 预检生成的命令会显示在页面 JSON 结果的 `command` 字段和 `<run_dir>/command.txt` 里，格式固定为：
 
 ```bash
-conda run -n sam3 python \
+conda run -n sam301 python \
   /home/book/sam301/sam3/train/train.py \
   -c /home/book/book01/runs/training/<run_id>/config/runtime_config.yaml \
   --use-cluster 0 \
@@ -178,7 +182,7 @@ conda run -n sam3 python \
 `<run_id>` 以本次实际预检生成的时间戳目录为准，不要手动编造。也可以跳过 UI，直接用 CLI 做预检：
 
 ```bash
-conda run -n sam3 python scripts/training_preflight.py \
+conda run -n sam301 python scripts/training_preflight.py \
   --max-epochs 1 --train-batch-size 1 --gradient-accumulation-steps 1
 ```
 
@@ -191,6 +195,7 @@ conda run -n sam3 python scripts/training_preflight.py \
 ```
 config/runtime_config.yaml
 dataset_info.json
+training_config_summary.json
 command.txt
 logs/book_spine/...         (训练器写)
 tensorboard/...             (训练器写)

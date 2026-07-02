@@ -28,7 +28,7 @@ class CudaStatus:
 def detect_cuda() -> CudaStatus:
     """Detect CUDA availability from inside the UI process itself.
 
-    The UI process is expected to be launched with `conda run -n sam3 python app.py`
+    The UI process is expected to be launched with `conda run -n sam301 python app.py`
     from a normal terminal, so this reflects the terminal's real GPU visibility,
     not any restricted coding-agent sandbox.
     """

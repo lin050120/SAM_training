@@ -19,6 +19,10 @@ from core.config import (
     DEFAULT_BOOK_SPINE_DATASET_ROOT,
     DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
     DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_CONDA_ENV,
+    EXPECTED_SAM3_INIT,
+    EXPECTED_SAM3_PACKAGE_DIR,
+    EXPECTED_SAM3_ROOT,
     DEFAULT_TRAINING_RUN_ROOT,
 )
 
@@ -210,6 +214,111 @@ class OptionalTrainingFieldParserTest(unittest.TestCase):
         value, error = parse_optional_positive_int(-1, allow_zero=True)
         self.assertIsNone(value)
         self.assertIsNotNone(error)
+
+
+class Sam301EnvironmentMigrationTest(unittest.TestCase):
+    def test_default_environment_and_expected_root(self) -> None:
+        self.assertEqual(DEFAULT_CONDA_ENV, "sam301")
+        self.assertEqual(EXPECTED_SAM3_ROOT, Path("/home/book/sam301"))
+        self.assertEqual(EXPECTED_SAM3_PACKAGE_DIR, Path("/home/book/sam301/sam3"))
+        self.assertEqual(EXPECTED_SAM3_INIT, Path("/home/book/sam301/sam3/__init__.py"))
+
+    def test_training_command_uses_sam301_environment(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        preflight = inspect_training_config(output_root=DEFAULT_TRAINING_RUN_ROOT, prepare_runtime=False)
+        self.assertEqual(preflight.conda_environment, "sam301")
+        self.assertEqual(preflight.command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertEqual(preflight.expected_sam3_root, "/home/book/sam301")
+
+    def test_training_subprocess_env_prefixes_expected_root_and_preserves_existing(self) -> None:
+        from core.training_runner import training_subprocess_env
+
+        original = {"PYTHONPATH": "/tmp/custom", "OTHER": "1"}
+        env = training_subprocess_env(original)
+        self.assertEqual(env["PYTHONPATH"], "/home/book/sam301:/tmp/custom")
+        self.assertEqual(original["PYTHONPATH"], "/tmp/custom")
+        self.assertEqual(env["OTHER"], "1")
+
+    def test_validate_sam3_import_path_accepts_expected_init(self) -> None:
+        from core.training_runner import validate_sam3_import_path
+
+        self.assertIsNone(validate_sam3_import_path("/home/book/sam301/sam3/__init__.py"))
+
+    def test_validate_sam3_import_path_rejects_old_and_external_paths(self) -> None:
+        from core.training_runner import validate_sam3_import_path
+
+        for actual in ["/home/book/sam3/sam3/__init__.py", "/tmp/sam3/__init__.py", "", None]:
+            with self.subTest(actual=actual):
+                self.assertIsNotNone(validate_sam3_import_path(actual))
+
+    def test_import_guard_command_uses_sam301_and_is_cwd_independent(self) -> None:
+        from core.training_runner import build_sam3_import_guard_command
+
+        command = build_sam3_import_guard_command()
+        self.assertEqual(command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertIn("Path(sam3.__file__).resolve()", command[-1])
+
+    def test_run_sam3_import_guard_rejects_failures_and_bad_output(self) -> None:
+        import subprocess
+
+        from core import training_runner
+
+        with mock.patch.object(training_runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "boom")):
+            result = training_runner.run_sam3_import_guard()
+            self.assertFalse(result["ok"])
+            self.assertIn("exited", result["error"])
+
+        with mock.patch.object(training_runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "not-json\n", "")):
+            result = training_runner.run_sam3_import_guard()
+            self.assertFalse(result["ok"])
+            self.assertIn("parseable JSON", result["error"])
+
+        bad = json.dumps({"python": "/env/bin/python", "sam3": "/home/book/sam3/sam3/__init__.py"})
+        with mock.patch.object(training_runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, bad + "\n", "")):
+            result = training_runner.run_sam3_import_guard()
+            self.assertFalse(result["ok"])
+            self.assertIn("/home/book/sam3", result["error"])
+
+    def test_run_sam3_import_guard_accepts_expected_output(self) -> None:
+        import subprocess
+
+        from core import training_runner
+
+        good = json.dumps({"python": "/home/book/anaconda3/envs/sam301/bin/python", "sam3": str(EXPECTED_SAM3_INIT)})
+        with mock.patch.object(training_runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "warning\n" + good + "\n", "")):
+            result = training_runner.run_sam3_import_guard()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["sam3"], str(EXPECTED_SAM3_INIT))
+
+    def test_preflight_records_sam301_import_metadata_and_config_summary(self) -> None:
+        from core import training_runner
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            output_root = Path(tmp)
+            fake_guard = {
+                "ok": True,
+                "sam3": str(EXPECTED_SAM3_INIT),
+                "python": "/home/book/anaconda3/envs/sam301/bin/python",
+                "error": None,
+            }
+            with mock.patch.object(training_runner, "run_sam3_import_guard", return_value=fake_guard):
+                preflight = training_runner.inspect_training_config(
+                    training_prompt="book spine",
+                    output_root=output_root,
+                    prepare_runtime=True,
+                    collect_import_metadata=True,
+                )
+            self.assertEqual(preflight.errors, [])
+            self.assertEqual(preflight.conda_environment, "sam301")
+            self.assertEqual(preflight.resolved_sam3_import_path, str(EXPECTED_SAM3_INIT))
+            run_dir = Path(preflight.run_dir)
+            command_text = (run_dir / "command.txt").read_text(encoding="utf-8")
+            self.assertIn("conda run -n sam301", command_text)
+            config_summary = json.loads((run_dir / "training_config_summary.json").read_text(encoding="utf-8"))
+            dataset_info = json.loads((run_dir / "dataset_info.json").read_text(encoding="utf-8"))
+            self.assertEqual(config_summary["conda_environment"], "sam301")
+            self.assertEqual(dataset_info["resolved_sam3_import_path"], str(EXPECTED_SAM3_INIT))
 
 
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
@@ -484,9 +593,17 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.original_detect_cuda = tpp.detect_cuda
         self.original_sleep = tpp.time.sleep
         self.original_validate_training_run_path = tpm.validate_training_run_path
+        self.original_verify_sam3_import_for_training = tpp.verify_sam3_import_for_training
         tpp.training_process_manager = self.manager
         tpm.training_process_manager = self.manager
         tpm.validate_training_run_path = lambda _path: None
+        tpp.verify_sam3_import_for_training = lambda env=None: {
+            "ok": True,
+            "sam3": str(EXPECTED_SAM3_INIT),
+            "expected": str(EXPECTED_SAM3_INIT),
+            "conda_environment": DEFAULT_CONDA_ENV,
+            "effective_pythonpath": env.get("PYTHONPATH") if env else None,
+        }
         tpp.detect_cuda = lambda: SimpleNamespace(available=True, device_count=1)
         tpp.time.sleep = lambda _seconds: None
         tpp._consumed_preflight_tokens.clear()
@@ -501,6 +618,7 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.tpp.detect_cuda = self.original_detect_cuda
         self.tpp.time.sleep = self.original_sleep
         self.tpm.validate_training_run_path = self.original_validate_training_run_path
+        self.tpp.verify_sam3_import_for_training = self.original_verify_sam3_import_for_training
         self.tpp._consumed_preflight_tokens.clear()
         self.tmp.cleanup()
 
@@ -637,6 +755,43 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         second = self._run_to_end(state)
         self.assertIn("BLOCKED", second[0][0])
         self.assertIn("已经被启动消费", second[0][0])
+
+    def test_import_guard_failure_rejects_without_starting_trainer(self) -> None:
+        self.tpp.verify_sam3_import_for_training = lambda env=None: {
+            "ok": False,
+            "sam3": "/home/book/sam3/sam3/__init__.py",
+            "expected": str(EXPECTED_SAM3_INIT),
+            "error": "sam3 import resolved to old source",
+        }
+        with mock.patch.object(self.manager, "start", wraps=self.manager.start) as start_mock:
+            state = self._state("guard_failure")
+            result = self._run_to_end(state)
+        self.assertIn("ERROR: SAM3 import guard failed", result[0][0])
+        start_mock.assert_not_called()
+        self.assertTrue(state["consumed"])
+
+    def test_command_txt_and_actual_start_command_can_match_sam301(self) -> None:
+        command = ["conda", "run", "-n", DEFAULT_CONDA_ENV, "python", "-c", "print('ok')"]
+        state = self._state("sam301_command", command)
+        (Path(state["run_dir"]) / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
+        with mock.patch.object(self.manager, "start", wraps=self.manager.start) as start_mock:
+            result = self._run_to_end(state)
+        self.assertIn("status=completed", result[-1][0])
+        started_command = start_mock.call_args.args[0]
+        self.assertEqual(started_command, command)
+        self.assertEqual(started_command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertEqual((Path(state["run_dir"]) / "command.txt").read_text(encoding="utf-8").strip(), " ".join(started_command))
+
+    def test_summary_records_conda_environment_and_import_metadata(self) -> None:
+        state = self._state("summary_env")
+        result = self._run_to_end(state)
+        self.assertIn("status=completed", result[-1][0])
+        summary = json.loads((Path(state["run_dir"]) / "training_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["conda_environment"], "sam301")
+        self.assertEqual(summary["expected_sam3_root"], "/home/book/sam301")
+        self.assertEqual(summary["resolved_sam3_import_path"], str(EXPECTED_SAM3_INIT))
+        self.assertTrue(summary["sam3_import_guard_ok"])
+        self.assertTrue(summary["effective_pythonpath"].startswith("/home/book/sam301"))
 
 
 class TrainingProcessManagerTest(unittest.TestCase):

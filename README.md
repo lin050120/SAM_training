@@ -16,7 +16,7 @@ preflight input invalidates the stored preflight result immediately, so a stale
 runtime YAML can never be used to start training.
 
 ```bash
-conda run -n sam3 python /home/book/book01/app.py
+conda run -n sam301 python /home/book/book01/app.py
 ```
 
 Launch this from a normal terminal, not a restricted coding-agent sandbox, so the
@@ -34,20 +34,20 @@ The default book-spine fine-tuning config for this workspace is:
 Use the preflight command to inspect the config and generate the training command without starting training:
 
 ```bash
-conda run -n sam3 python scripts/training_preflight.py
+conda run -n sam301 python scripts/training_preflight.py
 ```
 
 To manually set the SAM3 training text prompt without renaming COCO categories:
 
 ```bash
-conda run -n sam3 python scripts/training_preflight.py \
+conda run -n sam301 python scripts/training_preflight.py \
   --training-prompt "book spine"
 ```
 
 The generated training command is:
 
 ```bash
-conda run -n sam3 python /home/book/sam301/sam3/train/train.py \
+conda run -n sam301 python /home/book/sam301/sam3/train/train.py \
   -c /home/book/book01/runs/training/<run_id>/config/runtime_config.yaml \
   --use-cluster 0 \
   --num-gpus 1
@@ -67,7 +67,7 @@ Default runtime paths:
 Legacy NPZ mode:
 
 ```bash
-conda run -n sam3 python scripts/run_unified_inference.py \
+conda run -n sam301 python scripts/run_unified_inference.py \
   --legacy-raw-run /home/book/book01/data/dataset_raw/20260622_231208_book_spine \
   --limit 2
 ```
@@ -75,7 +75,7 @@ conda run -n sam3 python scripts/run_unified_inference.py \
 Real SAM3 mode, one image:
 
 ```bash
-PYTHONPATH=/home/book/sam301 conda run -n sam3 python scripts/run_unified_inference.py \
+PYTHONPATH=/home/book/sam301 conda run -n sam301 python scripts/run_unified_inference.py \
   --input-dir /home/book/book01/data/book_spine_sam3_dataset/test/images \
   --limit 1 \
   --checkpoint /home/book/sam301/sam3.pt \
@@ -112,7 +112,7 @@ cvat_export/
 Re-export and validate CVAT package without re-running SAM3:
 
 ```bash
-conda run -n sam3 python scripts/export_cvat_package.py \
+conda run -n sam301 python scripts/export_cvat_package.py \
   --run-dir /home/book/book01/runs/inference/<run_id> \
   --segmentation-format both \
   --polygon-fidelity

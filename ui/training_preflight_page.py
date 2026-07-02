@@ -16,11 +16,12 @@ from core.config import (
     DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
     DEFAULT_SAM3_CHECKPOINT,
     DEFAULT_TRAINING_RUN_ROOT,
-    SAM301_ROOT,
 )
+from core.training_runner import training_subprocess_env
 from ui.training_process_manager import (
     finalize_training_summary,
     make_training_summary_callback,
+    verify_sam3_import_for_training,
     training_process_manager,
     training_snapshot,
     validate_can_start_training,
@@ -125,6 +126,7 @@ def run_training_preflight(
             num_workers=parsed["num_workers"],
             output_root=Path(output_root).expanduser() if output_root else DEFAULT_TRAINING_RUN_ROOT,
             prepare_runtime=True,
+            collect_import_metadata=True,
         )
     except Exception as exc:
         logger.exception("training_preflight_failed")
@@ -149,6 +151,12 @@ def run_training_preflight(
         "val_images": preflight.val_images,
         "val_annotations": preflight.val_annotations,
         "num_gpus": preflight.num_gpus,
+        "conda_environment": preflight.conda_environment,
+        "expected_sam3_root": preflight.expected_sam3_root,
+        "expected_sam3_package_dir": preflight.expected_sam3_package_dir,
+        "resolved_sam3_import_path": preflight.resolved_sam3_import_path,
+        "sam3_import_guard_ok": preflight.sam3_import_guard_ok,
+        "effective_pythonpath": preflight.effective_pythonpath,
         "launch_token": uuid.uuid4().hex,
         "consumed": False,
     }
@@ -208,8 +216,14 @@ def start_training(
             return
         run_dir = Path(state["run_dir"])
         command = state["command"]
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(SAM301_ROOT)
+        env = training_subprocess_env(os.environ)
+        guard = verify_sam3_import_for_training(env=env)
+        if not guard["ok"]:
+            yield (
+                "ERROR: SAM3 import guard failed before trainer launch:\n"
+                f"expected={guard['expected']}\nactual={guard.get('sam3')}\nerror={guard.get('error')}"
+            ), "", format_json(guard), "{}"
+            return
         try:
             training_process_manager.start(
                 command,
@@ -220,6 +234,8 @@ def start_training(
                     command,
                     state.get("runtime_yaml"),
                     state.get("checkpoint"),
+                    import_metadata=guard,
+                    effective_pythonpath=env.get("PYTHONPATH"),
                 ),
             )
         except Exception as exc:
@@ -233,7 +249,14 @@ def start_training(
         time.sleep(1.0)
 
     snap = training_snapshot(run_dir)
-    summary = finalize_training_summary(run_dir, command, state.get("runtime_yaml"), state.get("checkpoint"))
+    summary = finalize_training_summary(
+        run_dir,
+        command,
+        state.get("runtime_yaml"),
+        state.get("checkpoint"),
+        import_metadata=guard,
+        effective_pythonpath=env.get("PYTHONPATH"),
+    )
     yield f"status={snap['status']} pid={snap['pid']}", snap["log"], format_json(snap), format_json(summary)
 
 

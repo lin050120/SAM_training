@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.training_runner import validate_training_run_path
+from core.config import DEFAULT_CONDA_ENV, EXPECTED_SAM3_INIT, EXPECTED_SAM3_PACKAGE_DIR, EXPECTED_SAM3_ROOT
+from core.training_runner import run_sam3_import_guard, validate_training_run_path
 from ui.process_manager import ProcessManager, ProcessState
 from ui.ui_utils import logger
 
@@ -153,6 +154,16 @@ def training_status_label(state: ProcessState) -> str:
     return "failed"
 
 
+def verify_sam3_import_for_training(env: dict[str, str] | None = None) -> dict[str, Any]:
+    result = run_sam3_import_guard(conda_env=DEFAULT_CONDA_ENV, env=env)
+    result["conda_environment"] = DEFAULT_CONDA_ENV
+    result["expected_sam3_root"] = str(EXPECTED_SAM3_ROOT)
+    result["expected_sam3_package_dir"] = str(EXPECTED_SAM3_PACKAGE_DIR)
+    result["expected"] = str(EXPECTED_SAM3_INIT)
+    result["effective_pythonpath"] = env.get("PYTHONPATH") if env else None
+    return result
+
+
 def training_snapshot(run_dir: Path | None) -> dict[str, Any]:
     """Everything the UI needs to render the monitoring panel for one poll tick."""
     log_text, state = training_process_manager.snapshot()
@@ -210,6 +221,8 @@ def finalize_training_summary(
     initial_checkpoint: str | None,
     log_text: str | None = None,
     state: ProcessState | None = None,
+    import_metadata: dict[str, Any] | None = None,
+    effective_pythonpath: str | None = None,
 ) -> dict[str, Any]:
     """Write training_summary.json for a training run that has stopped (any status).
 
@@ -253,6 +266,13 @@ def finalize_training_summary(
         "end_time": _iso(state.finished_at),
         "duration_seconds": duration,
         "exit_code": state.returncode,
+        "conda_environment": DEFAULT_CONDA_ENV,
+        "expected_sam3_root": str(EXPECTED_SAM3_ROOT),
+        "expected_sam3_package_dir": str(EXPECTED_SAM3_PACKAGE_DIR),
+        "resolved_sam3_import_path": import_metadata.get("sam3") if import_metadata else None,
+        "sam3_import_guard_ok": import_metadata.get("ok") if import_metadata else None,
+        "sam3_import_guard_error": import_metadata.get("error") if import_metadata else None,
+        "effective_pythonpath": effective_pythonpath,
         "initial_checkpoint": initial_checkpoint,
         "output_directory": str(run_dir),
         "discovered_checkpoint_files": discovered,
@@ -275,6 +295,8 @@ def make_training_summary_callback(
     command: list[str],
     runtime_config_path: str | None,
     initial_checkpoint: str | None,
+    import_metadata: dict[str, Any] | None = None,
+    effective_pythonpath: str | None = None,
 ):
     def _callback(log_text: str, state: ProcessState) -> None:
         finalize_training_summary(
@@ -284,6 +306,8 @@ def make_training_summary_callback(
             initial_checkpoint,
             log_text=log_text,
             state=state,
+            import_metadata=import_metadata,
+            effective_pythonpath=effective_pythonpath,
         )
 
     return _callback
