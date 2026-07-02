@@ -94,15 +94,17 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 
 参数修改后旧预检立即失效：阶段 A 的每一个输入框都绑定了 `.change()` 事件（`ui/training_preflight_page.py::invalidate_preflight()`），一旦触发就把服务端保存的 `preflight_state` 直接清空（不是只改前端显示），所以哪怕用户改完参数后没重新点预检就去点"启动训练"，`validate_can_start_training()` 在服务端看到的 `preflight_ok` 已经是 `False`，照样会被拒绝——这个保证是在服务端状态层面做的，不依赖浏览器端按钮是否被正确禁用。
 
-真正的训练命令仍然调用官方入口，是参数列表，不经过 shell：
+真正的训练命令是参数列表，不经过 shell。注意：官方 `sam3/train/train.py` 的 `-c` 是相对 `sam3.train` 包的 Hydra config name（`initialize_config_module("sam3.train")` + `compose(config_name=...)`，搜索路径只有 `pkg://sam3.train`），**不能**直接传 run 目录下 runtime YAML 的绝对路径（E2 实测报 `MissingConfigException`）。因此训练经由 book01 侧的包装 launcher 启动，它用 `initialize_config_dir` 指向本次 run 的 config 目录，然后原样调用官方 `sam3.train.train.main()`，官方启动语义（submitit 配置、single_node_runner、`--num-gpus` 覆盖）不变：
 
 ```
 conda run -n sam301 python \
-  /home/book/sam301/sam3/train/train.py \
-  -c <runtime_config.yaml> \
+  /home/book/book01/scripts/launch_sam3_training.py \
+  -c <runtime_config.yaml 绝对路径> \
   --use-cluster 0 \
   --num-gpus <num_gpus>
 ```
+
+预检在写出 runtime YAML 后还会用 `launch_sam3_training.py --validate-only` 在相同的 `sam301` 环境和子进程 env 下真实执行一次 Hydra compose（不导入 torch、不创建 trainer），失败则预检直接报错，不允许启动。
 
 这个命令是预检阶段（`core.training_runner.inspect_training_config()`）生成并存入 `preflight_state["command"]` 的，阶段 B 直接复用这个列表，不会重新拼接——避免"预检显示的命令"和"实际执行的命令"出现分歧。
 
@@ -173,7 +175,7 @@ E1 P2 修复轮继续只使用假短进程和临时目录，验证服务端后�
 
 ```bash
 conda run -n sam301 python \
-  /home/book/sam301/sam3/train/train.py \
+  /home/book/book01/scripts/launch_sam3_training.py \
   -c /home/book/book01/runs/training/<run_id>/config/runtime_config.yaml \
   --use-cluster 0 \
   --num-gpus 1

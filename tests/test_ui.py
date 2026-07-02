@@ -565,7 +565,9 @@ class TrainingPreflightCallTest(unittest.TestCase):
             if not preflight.errors:
                 self.assertIsNotNone(preflight.runtime_config_path)
                 self.assertTrue(Path(preflight.runtime_config_path).exists())
-                self.assertIn("train.py", " ".join(preflight.command))
+                # Training launches through the book01 Hydra wrapper (train.py's -c is a
+                # pkg://sam3.train config name and cannot load the per-run YAML path).
+                self.assertIn("launch_sam3_training.py", " ".join(preflight.command))
                 self.assertIn("--num-gpus", preflight.command)
         finally:
             if output_root.exists():

@@ -321,6 +321,153 @@ class Sam301EnvironmentMigrationTest(unittest.TestCase):
             self.assertEqual(dataset_info["resolved_sam3_import_path"], str(EXPECTED_SAM3_INIT))
 
 
+def _load_launcher_module():
+    import importlib.util
+
+    path = BOOK_ROOT / "scripts" / "launch_sam3_training.py"
+    spec = importlib.util.spec_from_file_location("launch_sam3_training_for_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class HydraLaunchRegressionTest(unittest.TestCase):
+    """Regression tests for the E2 Hydra launch failure.
+
+    train.py resolves -c inside pkg://sam3.train, so an absolute runtime YAML path
+    passed as its config name can never compose (MissingConfigException). Training
+    must go through scripts/launch_sam3_training.py, which initializes Hydra from
+    the runtime YAML's own directory.
+    """
+
+    def test_resolve_config_target_maps_yaml_path_to_dir_and_stem(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            yaml_path = Path(tmp) / "config" / "runtime_config.yaml"
+            yaml_path.parent.mkdir()
+            yaml_path.write_text("x: 1")
+            config_dir, config_name = launcher.resolve_config_target(yaml_path)
+            self.assertEqual(config_dir, str(yaml_path.parent.resolve()))
+            self.assertEqual(config_name, "runtime_config")
+        with self.assertRaises(FileNotFoundError):
+            launcher.resolve_config_target("/definitely/not/there/runtime_config.yaml")
+        with tempfile.TemporaryDirectory() as tmp:
+            not_yaml = Path(tmp) / "runtime_config.json"
+            not_yaml.write_text("{}")
+            with self.assertRaises(ValueError):
+                launcher.resolve_config_target(not_yaml)
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_training_command_uses_wrapper_not_train_py_as_hydra_entry(self) -> None:
+        from core.config import DEFAULT_SAM3_TRAIN_SCRIPT, DEFAULT_TRAINING_LAUNCHER
+        from core.training_runner import inspect_training_config
+
+        preflight = inspect_training_config(output_root=DEFAULT_TRAINING_RUN_ROOT, prepare_runtime=False)
+        command = preflight.command
+        self.assertEqual(command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertEqual(command[4:6], ["python", str(DEFAULT_TRAINING_LAUNCHER)])
+        # regression: train.py must never receive a filesystem path as its Hydra config name
+        self.assertNotIn(str(DEFAULT_SAM3_TRAIN_SCRIPT), command)
+        config_value = command[command.index("-c") + 1]
+        self.assertTrue(config_value.endswith(".yaml"))
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_generated_runtime_yaml_composes_via_hydra_and_validate_only_subprocess_passes(self) -> None:
+        import subprocess
+
+        from core.training_runner import (
+            build_hydra_validation_command,
+            inspect_training_config,
+            training_subprocess_env,
+        )
+        from omegaconf import OmegaConf
+
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            preflight = inspect_training_config(
+                training_prompt="book spine",
+                max_epochs=1,
+                train_batch_size=1,
+                gradient_accumulation_steps=4,
+                output_root=Path(tmp),
+                prepare_runtime=True,
+                collect_import_metadata=False,
+            )
+            self.assertEqual(preflight.errors, [])
+            runtime_yaml = Path(preflight.runtime_config_path)
+
+            # In-process: the exact compose the launch path performs must succeed.
+            cfg = launcher.compose_runtime_config(runtime_yaml)
+            self.assertEqual(OmegaConf.select(cfg, "trainer.max_epochs"), 1)
+            self.assertEqual(OmegaConf.select(cfg, "scratch.train_batch_size"), 1)
+            self.assertEqual(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"), 4)
+            self.assertIsNotNone(OmegaConf.select(cfg, "launcher.experiment_log_dir"))
+
+            # Real subprocess in the sam301 env, same command preflight uses.
+            command = build_hydra_validation_command(runtime_yaml)
+            self.assertEqual(command[:4], ["conda", "run", "-n", "sam301"])
+            completed = subprocess.run(
+                command,
+                cwd=str(BOOK_ROOT),
+                env=training_subprocess_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("hydra validation ok", completed.stdout)
+
+            missing = build_hydra_validation_command(Path(tmp) / "no_such_config.yaml")
+            failed = subprocess.run(
+                missing,
+                cwd=str(BOOK_ROOT),
+                env=training_subprocess_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_hydra_validation_failure_blocks_preflight(self) -> None:
+        from core import training_runner
+
+        fake_guard = {
+            "ok": True,
+            "sam3": str(EXPECTED_SAM3_INIT),
+            "python": "/home/book/anaconda3/envs/sam301/bin/python",
+            "error": None,
+        }
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            with mock.patch.object(training_runner, "run_sam3_import_guard", return_value=fake_guard):
+                with mock.patch.object(
+                    training_runner,
+                    "run_hydra_config_validation",
+                    return_value={"ok": False, "error": "boom", "returncode": 1},
+                ):
+                    preflight = training_runner.inspect_training_config(
+                        training_prompt="book spine",
+                        output_root=Path(tmp),
+                        prepare_runtime=True,
+                        collect_import_metadata=True,
+                    )
+        self.assertTrue(any("hydra config validation failed" in e for e in preflight.errors))
+
+    def test_hydra_validation_command_and_import_guard_stay_on_sam301(self) -> None:
+        from core.config import DEFAULT_TRAINING_LAUNCHER
+        from core.training_runner import build_hydra_validation_command, build_sam3_import_guard_command
+
+        command = build_hydra_validation_command(Path("/x/config/runtime_config.yaml"))
+        self.assertEqual(command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertEqual(command[4:6], ["python", str(DEFAULT_TRAINING_LAUNCHER)])
+        self.assertIn("--validate-only", command)
+        guard_command = build_sam3_import_guard_command()
+        self.assertEqual(guard_command[:4], ["conda", "run", "-n", "sam301"])
+        self.assertEqual(EXPECTED_SAM3_INIT, Path("/home/book/sam301/sam3/__init__.py"))
+
+
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
 class TrainingPageStageATest(unittest.TestCase):
     def setUp(self) -> None:

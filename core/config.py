@@ -7,6 +7,10 @@ BOOK_ROOT = Path("/home/book/book01")
 SAM301_ROOT = Path("/home/book/sam301")
 
 DEFAULT_SAM3_TRAIN_SCRIPT = SAM301_ROOT / "sam3" / "train" / "train.py"
+# train.py's -c is a Hydra config *name* inside pkg://sam3.train, not a filesystem
+# path; per-run runtime YAMLs live outside that package, so training is launched
+# through this book01-side wrapper (initialize_config_dir + official main()).
+DEFAULT_TRAINING_LAUNCHER = BOOK_ROOT / "scripts" / "launch_sam3_training.py"
 DEFAULT_BOOK_SPINE_FINETUNE_CONFIG = (
     SAM301_ROOT / "sam3" / "train" / "configs" / "book_spine" / "book_spine_finetune.yaml"
 )

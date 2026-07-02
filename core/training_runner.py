@@ -22,6 +22,7 @@ from core.config import (
     DEFAULT_SAM3_BPE_PATH,
     DEFAULT_SAM3_CHECKPOINT,
     DEFAULT_SAM3_TRAIN_SCRIPT,
+    DEFAULT_TRAINING_LAUNCHER,
     DEFAULT_TRAINING_RUN_ROOT,
     SAM301_ROOT,
 )
@@ -312,6 +313,68 @@ def run_sam3_import_guard(
     }
 
 
+def build_hydra_validation_command(config_path: Path, conda_env: str = DEFAULT_CONDA_ENV) -> list[str]:
+    return [
+        "conda",
+        "run",
+        "-n",
+        conda_env,
+        "python",
+        str(DEFAULT_TRAINING_LAUNCHER),
+        "-c",
+        str(config_path),
+        "--validate-only",
+    ]
+
+
+def run_hydra_config_validation(
+    config_path: Path,
+    conda_env: str = DEFAULT_CONDA_ENV,
+    cwd: Path = BOOK_ROOT,
+    env: dict[str, str] | None = None,
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """Prove the runtime YAML is loadable by the real launch path without training.
+
+    Runs the launcher wrapper's --validate-only mode in the same conda env and
+    subprocess env that the trainer itself will use.
+    """
+    command = build_hydra_validation_command(config_path, conda_env=conda_env)
+    effective_env = env if env is not None else training_subprocess_env()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            env=effective_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "command": command,
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+            "error": f"hydra validation command failed: {exc!r}",
+        }
+    error = None
+    if completed.returncode != 0:
+        stderr_tail = "\n".join((completed.stderr or "").splitlines()[-5:])
+        error = f"hydra validation exited with code {completed.returncode}: {stderr_tail}"
+    return {
+        "ok": error is None,
+        "command": command,
+        "stdout": completed.stdout or "",
+        "stderr": completed.stderr or "",
+        "returncode": completed.returncode,
+        "error": error,
+    }
+
+
 def _path_kind(path: Path) -> str:
     if not path.exists():
         return "missing"
@@ -594,6 +657,7 @@ def inspect_training_config(
     resolved_training_prompt = None
     prompt_source = None
     import_guard_result: dict[str, Any] | None = None
+    hydra_validation_result: dict[str, Any] | None = None
     effective_env = training_subprocess_env()
 
     if not exists:
@@ -657,6 +721,7 @@ def inspect_training_config(
         path_checks = [
             check_path(base_config, "base_config"),
             check_path(train_script, "train_script"),
+            check_path(DEFAULT_TRAINING_LAUNCHER, "training_launcher"),
             check_path(resolved_paths["initial_checkpoint"], "initial_checkpoint"),
             check_path(resolved_paths["bpe_path"], "bpe_path"),
             check_path(resolved_paths["train_images"], "train_images"),
@@ -670,9 +735,9 @@ def inspect_training_config(
                 warnings.append(f"{item.role}: {item.warning}: {item.resolved_path}")
             if item.error:
                 errors.append(f"{item.role}: {item.error}: {item.resolved_path}")
-            if item.role in {"initial_checkpoint", "bpe_path", "train_images", "train_annotations", "val_images", "val_annotations"} and not item.exists:
+            if item.role in {"train_script", "training_launcher", "initial_checkpoint", "bpe_path", "train_images", "train_annotations", "val_images", "val_annotations"} and not item.exists:
                 errors.append(f"{item.role} missing: {item.resolved_path}")
-            if item.role in {"initial_checkpoint", "bpe_path", "train_images", "train_annotations", "val_images", "val_annotations"} and item.exists and not item.readable:
+            if item.role in {"train_script", "training_launcher", "initial_checkpoint", "bpe_path", "train_images", "train_annotations", "val_images", "val_annotations"} and item.exists and not item.readable:
                 errors.append(f"{item.role} not readable: {item.resolved_path}")
 
         if resolved_paths["train_images"] == resolved_paths["val_images"]:
@@ -732,14 +797,27 @@ def inspect_training_config(
                 num_workers=validated_num_workers,
             )
             command_config = runtime_config_path
+            if collect_import_metadata:
+                hydra_validation_result = run_hydra_config_validation(
+                    runtime_config_path,
+                    conda_env=conda_env,
+                    cwd=BOOK_ROOT,
+                    env=effective_env,
+                )
+                if not hydra_validation_result.get("ok"):
+                    errors.append(f"hydra config validation failed: {hydra_validation_result.get('error')}")
 
+    # train.py resolves -c as a Hydra config name inside pkg://sam3.train, so the
+    # per-run runtime YAML (which must stay in the run directory) is launched via
+    # the book01 wrapper, which initialize_config_dir's the YAML's own directory
+    # and then calls the official sam3.train.train.main().
     command = [
         "conda",
         "run",
         "-n",
         conda_env,
         "python",
-        str(train_script),
+        str(DEFAULT_TRAINING_LAUNCHER),
         "-c",
         str(command_config),
         "--use-cluster",
@@ -757,6 +835,7 @@ def inspect_training_config(
             "expected_sam3_package_dir": str(EXPECTED_SAM3_PACKAGE_DIR),
             "resolved_sam3_import_path": import_guard_result.get("sam3") if import_guard_result else None,
             "sam3_import_guard_ok": import_guard_result.get("ok") if import_guard_result else None,
+            "hydra_validation_ok": hydra_validation_result.get("ok") if hydra_validation_result else None,
             "effective_pythonpath": effective_env.get("PYTHONPATH"),
             "initial_checkpoint": str(resolved_paths["initial_checkpoint"]),
             "bpe_path": str(resolved_paths["bpe_path"]),
@@ -791,6 +870,8 @@ def inspect_training_config(
             "resolved_sam3_import_path": import_guard_result.get("sam3") if import_guard_result else None,
             "sam3_import_guard_ok": import_guard_result.get("ok") if import_guard_result else None,
             "sam3_import_guard_error": import_guard_result.get("error") if import_guard_result else None,
+            "hydra_validation_ok": hydra_validation_result.get("ok") if hydra_validation_result else None,
+            "hydra_validation_error": hydra_validation_result.get("error") if hydra_validation_result else None,
             "effective_pythonpath": effective_env.get("PYTHONPATH"),
             "base_config_path": str(base_config),
             "runtime_config_path": str(runtime_config_path),

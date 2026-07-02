@@ -9,7 +9,8 @@ training orchestration and monitoring) for full details.
 
 The training tab is a two-stage flow: preflight generates and validates a runtime
 config without starting anything; a start button (gated server-side, not just a
-disabled widget) launches the real `sam3/train/train.py` entry point only once
+disabled widget) launches the official SAM3 trainer (via `scripts/launch_sam3_training.py`,
+which hands the per-run runtime YAML to `sam3.train.train.main()`) only once
 preflight passed, the checkpoint/data/runtime YAML all exist, no other training task
 is running, CUDA is available, and the user has explicitly confirmed. Editing any
 preflight input invalidates the stored preflight result immediately, so a stale
@@ -44,10 +45,12 @@ conda run -n sam301 python scripts/training_preflight.py \
   --training-prompt "book spine"
 ```
 
-The generated training command is:
+The generated training command is (train.py's own `-c` is a Hydra config name inside
+`pkg://sam3.train` and cannot load an external YAML path, so the wrapper initializes
+Hydra from the run's config directory and then calls the official `sam3.train.train.main()`):
 
 ```bash
-conda run -n sam301 python /home/book/sam301/sam3/train/train.py \
+conda run -n sam301 python /home/book/book01/scripts/launch_sam3_training.py \
   -c /home/book/book01/runs/training/<run_id>/config/runtime_config.yaml \
   --use-cluster 0 \
   --num-gpus 1
