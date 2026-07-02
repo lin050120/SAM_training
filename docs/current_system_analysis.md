@@ -253,6 +253,14 @@ CUDA 诊断:
 - 官方训练命令在当前 CUDA 不可用状态下不能实际训练验证。
 - 训练 YAML 中 `/home/book/book` 路径是历史模板路径；实际训练必须通过 runtime YAML 写入 `/home/book/book01` 和 `/home/book/sam301` 下的解析路径。
 
+## 23a. 阶段 D1: 本地 Web UI
+
+- Git: 本项目从阶段 A 起就没有真正的 Git 仓库（`.git/` 为空目录）。阶段 D1 开始前已经 `git init` 并提交了一次基线快照（`core/`, `scripts/`, `tests/`, `docs/`, `README.md`），后续在 `claude-stage-d` 分支上开发，不包含 `data/`, `runs/`, `experiments/`, `test_pic/` 等数据/输出目录。
+- UI 框架: Gradio。检查时 `gradio`/`streamlit`/`fastapi`/`uvicorn` 均未安装，经用户批准安装 `gradio`；因环境里已有的 `huggingface_hub 1.19.0`（`sam3`/`timm` 依赖）与 gradio 4.x 不兼容，二次经用户批准把版本范围从 `gradio>=4.0,<5.0` 调整为 `gradio>=5.0,<6.0`，实际装到 `gradio 5.50.0`，`torch`/`sam3`/`timm` 均验证正常。
+- 新增 `app.py` 和 `ui/` 目录，5 个页面（推理任务配置/历史运行记录/结果查看/CVAT 导出/训练预检）全部复用 `core/` 现有模块，没有新写第二套 NMS/COCO/CVAT/训练预检/run manager。
+- 有意思的发现: 本轮在 Claude Code 会话内直接检测到真实 GPU（`nvidia-smi` 正常，`torch.cuda.is_available()=True`，`NVIDIA GeForce RTX 5090`），和此前 Codex 会话中 GPU 不可见的情况不同；但本轮仍然没有主动运行真实 SAM3 推理或训练，只做了环境检测。
+- 详见 `docs/stage_d_ui.md`。
+
 ## 23. 训练配置预检结果
 
 预检命令:

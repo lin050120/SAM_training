@@ -1,5 +1,21 @@
 # Book Spine SAM3 Workflow
 
+## Local Web UI (Stage D1)
+
+A local Gradio UI wraps the existing CLI workflow (inference, history browsing, result
+viewing, CVAT export, training preflight) without reimplementing any of it. See
+`docs/stage_d_ui.md` for full details.
+
+```bash
+conda run -n sam3 python /home/book/book01/app.py
+```
+
+Launch this from a normal terminal, not a restricted coding-agent sandbox, so the
+UI process's CUDA detection reflects the terminal's real GPU visibility. Listens on
+`127.0.0.1:7860` only (`share=False`). The UI never starts real SAM3 training and,
+when `device=cuda` is requested but CUDA is unavailable in the UI process, it refuses
+to start inference instead of silently falling back to CPU.
+
 ## Authoritative SAM3 Training Config
 
 The default book-spine fine-tuning config for this workspace is:
