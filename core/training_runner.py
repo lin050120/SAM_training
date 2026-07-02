@@ -572,6 +572,38 @@ def write_runtime_yaml(
         OmegaConf.update(cfg, "scratch.num_train_workers", int(num_workers), merge=False)
     if learning_rate is not None:
         OmegaConf.update(cfg, "scratch.lr_transformer", float(learning_rate), merge=False)
+
+    # Gradient accumulation wiring. trainer._run_step requires the dataloader to
+    # yield a LIST of exactly gradient_accumulation_steps micro-batches when
+    # accumulation is enabled (sam3/train/trainer.py:920-925). The only official
+    # producer of that list is sam3.train.data.collator.collate_fn_api_with_chunking,
+    # which splits one DataLoader fetch into num_chunks collated micro-batches — so
+    # the DataLoader batch_size must be micro_batch × accum_steps. The base YAML
+    # (copied from a grad_accum=1 template) uses plain collate_fn_api and
+    # batch_size=${scratch.train_batch_size}; without this wiring any accum>1 run
+    # fails with "Expected a list of batches, got <class 'dict'>".
+    effective_accum = int(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"))
+    effective_micro_batch = int(OmegaConf.select(cfg, "scratch.train_batch_size"))
+    if effective_accum > 1:
+        OmegaConf.update(
+            cfg,
+            "scratch.collate_fn._target_",
+            "sam3.train.data.collator.collate_fn_api_with_chunking",
+            merge=False,
+        )
+        OmegaConf.update(
+            cfg,
+            "scratch.collate_fn.num_chunks",
+            "${scratch.gradient_accumulation_steps}",
+            merge=False,
+        )
+        OmegaConf.update(
+            cfg,
+            "trainer.data.train.batch_size",
+            effective_micro_batch * effective_accum,
+            merge=False,
+        )
+
     runtime_config.parent.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(cfg, runtime_config)
 

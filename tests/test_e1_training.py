@@ -469,6 +469,69 @@ class HydraLaunchRegressionTest(unittest.TestCase):
 
 
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+class GradAccumWiringTest(unittest.TestCase):
+    """trainer._run_step requires a list of exactly accum_steps micro-batches when
+    gradient_accumulation_steps > 1; the runtime YAML must wire
+    collate_fn_api_with_chunking and scale the train DataLoader batch_size."""
+
+    def _preflight(self, accum: int, tmp: str):
+        from core.training_runner import inspect_training_config
+
+        return inspect_training_config(
+            training_prompt="book spine",
+            max_epochs=1,
+            train_batch_size=1,
+            gradient_accumulation_steps=accum,
+            output_root=Path(tmp),
+            prepare_runtime=True,
+            collect_import_metadata=False,
+        )
+
+    def test_accum_4_wires_chunking_collate_and_scaled_train_batch_size(self) -> None:
+        from omegaconf import OmegaConf
+
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            preflight = self._preflight(4, tmp)
+            self.assertEqual(preflight.errors, [])
+            cfg = OmegaConf.load(preflight.runtime_config_path)
+            self.assertEqual(
+                OmegaConf.select(cfg, "scratch.collate_fn._target_"),
+                "sam3.train.data.collator.collate_fn_api_with_chunking",
+            )
+            self.assertEqual(OmegaConf.select(cfg, "scratch.collate_fn.num_chunks"), 4)
+            self.assertTrue(OmegaConf.select(cfg, "scratch.collate_fn._partial_"))
+            self.assertEqual(OmegaConf.select(cfg, "scratch.collate_fn.dict_key"), "all")
+            self.assertEqual(OmegaConf.select(cfg, "trainer.data.train.batch_size"), 4)
+            self.assertEqual(OmegaConf.select(cfg, "scratch.train_batch_size"), 1)
+            self.assertEqual(OmegaConf.select(cfg, "trainer.gradient_accumulation_steps"), 4)
+            # val side must stay on the plain collator (no accumulation on val)
+            self.assertEqual(
+                OmegaConf.select(cfg, "scratch.collate_fn_val._target_"),
+                "sam3.train.data.collator.collate_fn_api",
+            )
+            # and the wired YAML must still compose through the real launch path
+            composed = launcher.compose_runtime_config(preflight.runtime_config_path)
+            self.assertEqual(OmegaConf.select(composed, "scratch.collate_fn.num_chunks"), 4)
+            self.assertEqual(preflight.effective_batch_size, 4)
+
+    def test_accum_1_leaves_collate_and_train_batch_size_untouched(self) -> None:
+        from omegaconf import OmegaConf
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            preflight = self._preflight(1, tmp)
+            self.assertEqual(preflight.errors, [])
+            cfg = OmegaConf.load(preflight.runtime_config_path)
+            self.assertEqual(
+                OmegaConf.select(cfg, "scratch.collate_fn._target_"),
+                "sam3.train.data.collator.collate_fn_api",
+            )
+            self.assertNotIn("num_chunks", cfg.scratch.collate_fn)
+            self.assertEqual(OmegaConf.select(cfg, "trainer.data.train.batch_size"), 1)
+            self.assertEqual(preflight.effective_batch_size, 1)
+
+
+@unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
 class TrainingPageStageATest(unittest.TestCase):
     def setUp(self) -> None:
         self.output_root = _scratch_output_root("page_stage_a")

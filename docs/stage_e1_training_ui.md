@@ -21,7 +21,7 @@
 |---|---|---|
 | `max_epochs` | `trainer.max_epochs` | 基础 YAML 当前为 20 |
 | `train_batch_size` | `scratch.train_batch_size`（经 `${scratch.train_batch_size}` 插值传给 `trainer.data.train.batch_size`） | 基础 YAML 当前为 1 |
-| `gradient_accumulation_steps` | `scratch.gradient_accumulation_steps`（经插值传给 `trainer.gradient_accumulation_steps`） | 基础 YAML 当前为 4 |
+| `gradient_accumulation_steps` | `scratch.gradient_accumulation_steps`（经插值传给 `trainer.gradient_accumulation_steps`） | 基础 YAML 当前为 4。解析值 >1 时 runtime YAML 还会自动接线：`scratch.collate_fn._target_` 换成官方 `collate_fn_api_with_chunking` 并设 `num_chunks=${scratch.gradient_accumulation_steps}`，同时把 `trainer.data.train.batch_size` 设为 `train_batch_size × accum`——trainer 在累积模式要求 dataloader 每步产出恰好 accum 个 micro-batch 的 list（`trainer.py:920-925`），基础 YAML 的普通 `collate_fn_api` 不满足该契约（E2 实测 `Expected a list of batches, got dict`） |
 | `learning_rate` | `scratch.lr_transformer` | 可训练部分（transformer/decoder）的学习率，见下方"未覆盖字段"说明 |
 | `num_workers` | `scratch.num_train_workers` | 只覆盖训练集 dataloader，见下方"num_workers 范围"说明 |
 | `num_gpus` | 不写入 YAML，走现有 `--num-gpus` CLI 参数 | `sam3/train/train.py:173-174` 已确认 `--num-gpus` 会在运行时覆盖 `cfg.launcher.gpus_per_node`，因此预检不需要重复写 YAML |
