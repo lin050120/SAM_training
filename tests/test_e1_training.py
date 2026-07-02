@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -244,6 +245,17 @@ class TrainingPageStageATest(unittest.TestCase):
         self.assertTrue(Path(state["runtime_yaml"]).exists())
         self.assertIsInstance(state["command"], list)
         self.assertTrue(all(isinstance(part, str) for part in state["command"]))
+        self.assertIsNotNone(state["launch_token"])
+        self.assertFalse(state["consumed"])
+
+    def test_repeated_preflight_creates_new_launch_token_run_dir_and_runtime_yaml(self) -> None:
+        result_text_1, state_1, _ = self._run()
+        result_text_2, state_2, _ = self._run()
+        self.assertTrue(state_1["ok"], result_text_1)
+        self.assertTrue(state_2["ok"], result_text_2)
+        self.assertNotEqual(state_1["launch_token"], state_2["launch_token"])
+        self.assertNotEqual(state_1["run_dir"], state_2["run_dir"])
+        self.assertNotEqual(state_1["runtime_yaml"], state_2["runtime_yaml"])
 
     def test_invalid_numeric_field_blocks_preflight_without_running_it(self) -> None:
         result_text, state, status = self._run(max_epochs="not-a-number")
@@ -371,6 +383,245 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
             )
         self.assertEqual(reasons, [])
 
+    def test_consumed_preflight_blocks(self) -> None:
+        from ui.training_process_manager import validate_can_start_training
+
+        with tempfile.TemporaryDirectory() as tmp:
+            yaml_path = Path(tmp) / "runtime.yaml"
+            yaml_path.write_text("x: 1")
+            ckpt_path = Path(tmp) / "ckpt.pt"
+            ckpt_path.write_text("fake")
+            reasons = validate_can_start_training(
+                **self._base_kwargs(
+                    run_dir=tmp,
+                    runtime_yaml=str(yaml_path),
+                    checkpoint=str(ckpt_path),
+                    train_images=tmp,
+                    train_annotations=tmp,
+                    val_images=tmp,
+                    val_annotations=tmp,
+                    preflight_consumed=True,
+                )
+            )
+        self.assertTrue(any("已经被启动消费" in r for r in reasons))
+
+    def test_existing_training_artifacts_block_run_dir_reuse(self) -> None:
+        from ui.training_process_manager import validate_can_start_training
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            yaml_path = run_dir / "runtime.yaml"
+            yaml_path.write_text("x: 1")
+            ckpt_path = run_dir / "initial.pt"
+            ckpt_path.write_text("fake")
+            (run_dir / "checkpoints").mkdir()
+            (run_dir / "checkpoints" / "epoch_1.pt").write_text("old")
+            reasons = validate_can_start_training(
+                **self._base_kwargs(
+                    run_dir=str(run_dir),
+                    runtime_yaml=str(yaml_path),
+                    checkpoint=str(ckpt_path),
+                    train_images=tmp,
+                    train_annotations=tmp,
+                    val_images=tmp,
+                    val_annotations=tmp,
+                )
+            )
+        self.assertTrue(any("checkpoint" in r and "拒绝复用" in r for r in reasons))
+
+    def test_existing_training_summary_blocks_run_dir_reuse(self) -> None:
+        from ui.training_process_manager import validate_can_start_training
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            yaml_path = run_dir / "runtime.yaml"
+            yaml_path.write_text("x: 1")
+            ckpt_path = run_dir / "initial.pt"
+            ckpt_path.write_text("fake")
+            (run_dir / "training_summary.json").write_text("{}")
+            reasons = validate_can_start_training(
+                **self._base_kwargs(
+                    run_dir=str(run_dir),
+                    runtime_yaml=str(yaml_path),
+                    checkpoint=str(ckpt_path),
+                    train_images=tmp,
+                    train_annotations=tmp,
+                    val_images=tmp,
+                    val_annotations=tmp,
+                )
+            )
+        self.assertTrue(any("training_summary.json" in r and "拒绝复用" in r for r in reasons))
+
+
+class StartTrainingOneTimePreflightTest(unittest.TestCase):
+    """Exercises start_training with fake commands only; never starts SAM3."""
+
+    def setUp(self) -> None:
+        from types import SimpleNamespace
+
+        from ui.process_manager import ProcessManager
+        import ui.training_preflight_page as tpp
+        import ui.training_process_manager as tpm
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.manager = ProcessManager()
+        self.tpp = tpp
+        self.tpm = tpm
+        self.original_tpp_manager = tpp.training_process_manager
+        self.original_tpm_manager = tpm.training_process_manager
+        self.original_detect_cuda = tpp.detect_cuda
+        self.original_sleep = tpp.time.sleep
+        tpp.training_process_manager = self.manager
+        tpm.training_process_manager = self.manager
+        tpp.detect_cuda = lambda: SimpleNamespace(available=True, device_count=1)
+        tpp.time.sleep = lambda _seconds: None
+        tpp._consumed_preflight_tokens.clear()
+
+    def tearDown(self) -> None:
+        if self.manager.is_running():
+            self.manager.stop(timeout=1.0)
+        self.tpp.training_process_manager = self.original_tpp_manager
+        self.tpm.training_process_manager = self.original_tpm_manager
+        self.tpp.detect_cuda = self.original_detect_cuda
+        self.tpp.time.sleep = self.original_sleep
+        self.tpp._consumed_preflight_tokens.clear()
+        self.tmp.cleanup()
+
+    def _state(self, run_name: str = "run1", command: list[str] | None = None) -> dict:
+        import uuid
+
+        run_dir = self.base / run_name
+        run_dir.mkdir(parents=True)
+        runtime_yaml = run_dir / "config" / "runtime_config.yaml"
+        runtime_yaml.parent.mkdir()
+        runtime_yaml.write_text("x: 1")
+        checkpoint = self.base / f"{run_name}_initial.pt"
+        checkpoint.write_text("fake")
+        train_images = self.base / f"{run_name}_train_images"
+        val_images = self.base / f"{run_name}_val_images"
+        train_images.mkdir()
+        val_images.mkdir()
+        train_annotations = self.base / f"{run_name}_train.json"
+        val_annotations = self.base / f"{run_name}_val.json"
+        train_annotations.write_text("{}")
+        val_annotations.write_text("{}")
+        (run_dir / "checkpoints").mkdir()
+        (run_dir / "logs").mkdir()
+        return {
+            "ok": True,
+            "run_dir": str(run_dir),
+            "runtime_yaml": str(runtime_yaml),
+            "checkpoint": str(checkpoint),
+            "command": command or [sys.executable, "-c", "print('completed fake training')"],
+            "train_images": str(train_images),
+            "train_annotations": str(train_annotations),
+            "val_images": str(val_images),
+            "val_annotations": str(val_annotations),
+            "num_gpus": 1,
+            "launch_token": uuid.uuid4().hex,
+            "consumed": False,
+        }
+
+    def _run_to_end(self, state: dict, confirmed: bool = True) -> list[tuple[str, str, str, str]]:
+        return list(self.tpp.start_training(state, confirmed))
+
+    def test_first_start_succeeds_and_second_same_preflight_is_rejected(self) -> None:
+        state = self._state()
+        first = self._run_to_end(state)
+        self.assertIn("status=completed", first[-1][0])
+        self.assertTrue((Path(state["run_dir"]) / "training_summary.json").exists())
+
+        second = self._run_to_end(state)
+        self.assertIn("BLOCKED", second[0][0])
+        self.assertIn("已经被启动消费", second[0][0])
+
+    def test_completed_failed_and_cancelled_states_do_not_allow_old_preflight_reuse(self) -> None:
+        cases = [
+            ("completed", [sys.executable, "-c", "print('ok')"]),
+            ("failed", [sys.executable, "-c", "import sys; sys.exit(2)"]),
+        ]
+        for expected, command in cases:
+            with self.subTest(expected=expected):
+                state = self._state(expected, command)
+                first = self._run_to_end(state)
+                self.assertIn(f"status={expected}", first[-1][0])
+                second = self._run_to_end(state)
+                self.assertIn("BLOCKED", second[0][0])
+                self.assertIn("已经被启动消费", second[0][0])
+
+        cancelled = self._state("cancelled", [sys.executable, "-c", "import time; time.sleep(30)"])
+        gen = self.tpp.start_training(cancelled, True)
+        first_status = next(gen)[0]
+        self.assertIn("status=running", first_status)
+        self.manager.stop(timeout=1.0)
+        rest = list(gen)
+        self.assertIn("status=cancelled", rest[-1][0])
+        second = self._run_to_end(cancelled)
+        self.assertIn("BLOCKED", second[0][0])
+        self.assertIn("已经被启动消费", second[0][0])
+
+    def test_new_preflight_after_consumption_can_start_with_new_run_dir_and_runtime_yaml(self) -> None:
+        old_state = self._state("old_run")
+        self._run_to_end(old_state)
+        new_state = self._state("new_run")
+        new_result = self._run_to_end(new_state)
+
+        self.assertIn("status=completed", new_result[-1][0])
+        self.assertNotEqual(old_state["run_dir"], new_state["run_dir"])
+        self.assertNotEqual(old_state["runtime_yaml"], new_state["runtime_yaml"])
+        self.assertEqual(new_state["runtime_yaml"], (Path(new_state["run_dir"]) / "config" / "runtime_config.yaml").as_posix())
+
+    def test_concurrent_double_start_only_one_request_succeeds(self) -> None:
+        state = self._state("concurrent", [sys.executable, "-c", "import time; print('started', flush=True); time.sleep(10)"])
+        statuses: list[str] = []
+
+        def start_once() -> None:
+            gen = self.tpp.start_training(state, True)
+            statuses.append(next(gen)[0])
+
+        threads = [threading.Thread(target=start_once), threading.Thread(target=start_once)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+        if self.manager.is_running():
+            self.manager.stop(timeout=1.0)
+
+        self.assertEqual(sum("status=running" in status for status in statuses), 1, statuses)
+        self.assertEqual(sum("BLOCKED" in status for status in statuses), 1, statuses)
+        self.assertTrue(any("已经被启动消费" in status for status in statuses))
+
+    def test_existing_artifacts_and_parameter_invalidation_block_start(self) -> None:
+        state = self._state("artifact")
+        (Path(state["run_dir"]) / "checkpoints" / "old.pt").write_text("old")
+        blocked = self._run_to_end(state)
+        self.assertIn("BLOCKED", blocked[0][0])
+        self.assertIn("checkpoint", blocked[0][0])
+
+        invalid_state, _ = self.tpp.invalidate_preflight("changed")
+        blocked = self._run_to_end(invalid_state)
+        self.assertIn("BLOCKED", blocked[0][0])
+        self.assertIn("预检", blocked[0][0])
+
+    def test_confirmation_required_before_preflight_is_consumed(self) -> None:
+        state = self._state("confirm")
+        blocked = self._run_to_end(state, confirmed=False)
+        self.assertIn("BLOCKED", blocked[0][0])
+        self.assertIn("确认框", blocked[0][0])
+        self.assertFalse(state["consumed"])
+
+    def test_start_failure_consumes_preflight_and_does_not_leave_manager_running(self) -> None:
+        state = self._state("start_failure", ["/definitely/not/a/real/executable"])
+        first = self._run_to_end(state)
+        self.assertIn("ERROR: failed to start training process", first[0][0])
+        self.assertTrue(state["consumed"])
+        self.assertFalse(self.manager.is_running())
+
+        second = self._run_to_end(state)
+        self.assertIn("BLOCKED", second[0][0])
+        self.assertIn("已经被启动消费", second[0][0])
+
 
 class TrainingProcessManagerTest(unittest.TestCase):
     """Only drives fake python commands, never SAM3's train.py."""
@@ -465,6 +716,117 @@ class TrainingProcessManagerTest(unittest.TestCase):
                 alive = False
                 break
         self.assertFalse(alive, "grandchild survived stop() — orphan risk")
+
+    def test_training_process_manager_shutdown_is_registered_with_atexit_once(self) -> None:
+        import importlib
+        from unittest import mock
+
+        import ui.training_process_manager as tpm
+
+        callbacks = []
+        tpm._TRAINING_SHUTDOWN_REGISTERED = False
+        with mock.patch("atexit.register", side_effect=callbacks.append):
+            reloaded = importlib.reload(tpm)
+        self.assertEqual(len(callbacks), 1)
+
+        class FakeManager:
+            def __init__(self) -> None:
+                self.called = False
+
+            def shutdown(self) -> None:
+                self.called = True
+
+        fake = FakeManager()
+        reloaded.training_process_manager = fake
+        callbacks[0]()
+        self.assertTrue(fake.called)
+
+        callbacks.clear()
+        with mock.patch("atexit.register", side_effect=callbacks.append):
+            importlib.reload(reloaded)
+        self.assertEqual(callbacks, [])
+
+    def test_shutdown_is_idempotent_and_preserves_log_and_cancelled_state(self) -> None:
+        self.manager.start([sys.executable, "-c", "import time; print('tail log', flush=True); time.sleep(30)"])
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            log_text, _ = self.manager.snapshot()
+            if "tail log" in log_text:
+                break
+            time.sleep(0.05)
+        self.manager.shutdown()
+        self.manager.shutdown()
+        log_text, state = self.manager.snapshot()
+        self.assertIn("tail log", log_text)
+        self.assertFalse(state.running)
+        self.assertTrue(state.stopped_by_user)
+
+    def test_sigterm_success_does_not_need_sigkill(self) -> None:
+        import signal
+        from unittest import mock
+
+        original_signal_group = self.manager._signal_group
+        signals = []
+
+        def record_and_signal(process, sig):
+            signals.append(sig)
+            original_signal_group(process, sig)
+
+        self.manager.start([sys.executable, "-c", "import time; time.sleep(30)"])
+        with mock.patch.object(self.manager, "_signal_group", side_effect=record_and_signal):
+            self.manager.stop(timeout=2.0)
+        self.assertIn(signal.SIGTERM, signals)
+        self.assertNotIn(signal.SIGKILL, signals)
+
+    def test_sigterm_timeout_uses_sigkill(self) -> None:
+        import signal
+        from unittest import mock
+
+        original_signal_group = self.manager._signal_group
+        signals = []
+
+        def record_and_signal(process, sig):
+            signals.append(sig)
+            original_signal_group(process, sig)
+
+        code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(30)"
+        self.manager.start([sys.executable, "-c", code])
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            log_text, _ = self.manager.snapshot()
+            if "ready" in log_text:
+                break
+            time.sleep(0.05)
+        with mock.patch.object(self.manager, "_signal_group", side_effect=record_and_signal):
+            self.manager.stop(timeout=0.2)
+        self.assertIn(signal.SIGTERM, signals)
+        self.assertIn(signal.SIGKILL, signals)
+
+    def test_inference_and_training_managers_do_not_interfere(self) -> None:
+        from ui.process_manager import ProcessManager
+
+        inference_manager = ProcessManager()
+        training_manager = ProcessManager()
+        inference_manager.start([sys.executable, "-c", "import time; time.sleep(30)"])
+        training_manager.start([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            training_manager.shutdown()
+            self.assertFalse(training_manager.is_running())
+            self.assertTrue(inference_manager.is_running())
+        finally:
+            inference_manager.shutdown()
+
+    def test_start_failure_rolls_back_running_state(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            self.manager.start(["/definitely/not/a/real/executable"])
+        self.assertFalse(self.manager.is_running())
+        self.manager.start([sys.executable, "-c", "print('after failure')"])
+        deadline = time.time() + 5
+        while self.manager.is_running() and time.time() < deadline:
+            time.sleep(0.05)
+        log_text, state = self.manager.snapshot()
+        self.assertIn("after failure", log_text)
+        self.assertEqual(state.returncode, 0)
 
 
 class FinalizeTrainingSummaryTest(unittest.TestCase):

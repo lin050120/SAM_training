@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import shlex
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -41,11 +43,14 @@ STAGE_A_NOTE = (
 
 STAGE_B_NOTE = "只有满足预检通过、runtime YAML/checkpoint/数据均存在、当前无其他活动训练任务、CUDA 可用且用户已勾选确认框时，才会真正启动训练子进程。"
 
+_preflight_launch_lock = threading.Lock()
+_consumed_preflight_tokens: set[str] = set()
+
 
 def _empty_preflight_state() -> dict[str, Any]:
     return {"ok": False, "run_dir": None, "runtime_yaml": None, "checkpoint": None, "command": None,
             "train_images": None, "train_annotations": None, "val_images": None, "val_annotations": None,
-            "num_gpus": None}
+            "num_gpus": None, "launch_token": None, "consumed": False}
 
 
 def invalidate_preflight(_changed_value: Any = None) -> tuple[dict[str, Any], str]:
@@ -143,17 +148,25 @@ def run_training_preflight(
         "val_images": preflight.val_images,
         "val_annotations": preflight.val_annotations,
         "num_gpus": preflight.num_gpus,
+        "launch_token": uuid.uuid4().hex,
+        "consumed": False,
     }
     return result_text, state, "预检通过，可以启动训练。"
 
 
-def start_training(
-    preflight_state: dict[str, Any] | None,
+def _consume_preflight_for_launch(
+    state: dict[str, Any],
     confirmed: bool,
-) -> Iterator[tuple[str, str, str, str]]:
-    """Stage B click handler. Yields (status_text, log_text, monitor_json, summary_json)."""
-    state = preflight_state or _empty_preflight_state()
+) -> list[str]:
+    """Atomically validate and consume one preflight launch token.
+
+    The token is consumed before subprocess creation. If Popen later fails, the
+    preflight still cannot be retried because the run directory may be in an
+    uncertain partial-start state.
+    """
     cuda = detect_cuda()
+    token = state.get("launch_token")
+    preflight_consumed = bool(state.get("consumed")) or not token or token in _consumed_preflight_tokens
     reasons = validate_can_start_training(
         preflight_ok=bool(state.get("ok")),
         run_dir=state.get("run_dir"),
@@ -168,7 +181,26 @@ def start_training(
         cuda_available=cuda.available,
         requested_num_gpus=int(state.get("num_gpus") or 1),
         cuda_device_count=cuda.device_count,
+        preflight_consumed=preflight_consumed,
     )
+    if not token:
+        reasons.append("预检启动凭证缺失，请重新运行训练预检")
+    if reasons:
+        return reasons
+    _consumed_preflight_tokens.add(str(token))
+    state["consumed"] = True
+    state["ok"] = False
+    return []
+
+
+def start_training(
+    preflight_state: dict[str, Any] | None,
+    confirmed: bool,
+) -> Iterator[tuple[str, str, str, str]]:
+    """Stage B click handler. Yields (status_text, log_text, monitor_json, summary_json)."""
+    state = preflight_state or _empty_preflight_state()
+    with _preflight_launch_lock:
+        reasons = _consume_preflight_for_launch(state, confirmed)
     if reasons:
         yield "BLOCKED:\n" + "\n".join(reasons), "", "{}", "{}"
         return

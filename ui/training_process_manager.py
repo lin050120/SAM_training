@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import re
 import time
@@ -29,6 +30,7 @@ def validate_can_start_training(
     cuda_available: bool,
     requested_num_gpus: int,
     cuda_device_count: int,
+    preflight_consumed: bool = False,
 ) -> list[str]:
     """Every condition that must hold before a training subprocess may be spawned.
 
@@ -40,8 +42,14 @@ def validate_can_start_training(
     reasons: list[str] = []
     if not preflight_ok:
         reasons.append("必须先完成训练预检且通过（预检结果没有 errors），或参数已修改后未重新预检")
+    if preflight_consumed:
+        reasons.append("这次训练预检已经被启动消费，请重新运行训练预检生成新的 run directory")
     if not run_dir or not Path(run_dir).exists():
         reasons.append(f"training run 目录不存在，请重新预检: {run_dir}")
+    elif (Path(run_dir) / "training_summary.json").exists():
+        reasons.append(f"training run 已经有 training_summary.json，拒绝复用旧 run directory: {run_dir}")
+    elif (Path(run_dir) / "checkpoints").exists() and any((Path(run_dir) / "checkpoints").iterdir()):
+        reasons.append(f"training run 已经有 checkpoint 产物，拒绝复用旧 run directory: {run_dir}")
     if not runtime_yaml or not Path(runtime_yaml).exists():
         reasons.append(f"runtime YAML 不存在，请重新预检: {runtime_yaml}")
     if not checkpoint or not Path(checkpoint).exists():
@@ -63,6 +71,15 @@ def validate_can_start_training(
     elif requested_num_gpus > cuda_device_count:
         reasons.append(f"请求 num_gpus={requested_num_gpus}，但只检测到 {cuda_device_count} 个可用 GPU")
     return reasons
+
+
+def _shutdown_training_process_manager() -> None:
+    training_process_manager.shutdown()
+
+
+if not globals().get("_TRAINING_SHUTDOWN_REGISTERED", False):
+    atexit.register(_shutdown_training_process_manager)
+    _TRAINING_SHUTDOWN_REGISTERED = True
 
 
 _METRIC_PATTERNS = {

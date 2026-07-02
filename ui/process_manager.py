@@ -64,9 +64,9 @@ class ProcessManager:
             return None
 
     def start(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
-        if self.is_running():
-            raise RuntimeError("A task is already running. Stop it before starting a new one.")
         with self._lock:
+            if self._state.running:
+                raise RuntimeError("A task is already running. Stop it before starting a new one.")
             self._log_lines = []
             self._state = ProcessState(
                 running=True,
@@ -75,16 +75,24 @@ class ProcessManager:
                 started_at=time.time(),
             )
         logger.info("process_start command=%s cwd=%s", command, cwd)
-        self._process = subprocess.Popen(
-            command,
-            cwd=str(cwd) if cwd else None,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            start_new_session=True,
-        )
+        try:
+            self._process = subprocess.Popen(
+                command,
+                cwd=str(cwd) if cwd else None,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+        except Exception:
+            with self._lock:
+                self._state.running = False
+                self._state.returncode = None
+                self._state.finished_at = time.time()
+            self._process = None
+            raise
         self._reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self._reader_thread.start()
 
