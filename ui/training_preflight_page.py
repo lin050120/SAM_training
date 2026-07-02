@@ -20,6 +20,7 @@ from core.config import (
 )
 from ui.training_process_manager import (
     finalize_training_summary,
+    make_training_summary_callback,
     training_process_manager,
     training_snapshot,
     validate_can_start_training,
@@ -199,23 +200,32 @@ def start_training(
 ) -> Iterator[tuple[str, str, str, str]]:
     """Stage B click handler. Yields (status_text, log_text, monitor_json, summary_json)."""
     state = preflight_state or _empty_preflight_state()
+
     with _preflight_launch_lock:
         reasons = _consume_preflight_for_launch(state, confirmed)
-    if reasons:
-        yield "BLOCKED:\n" + "\n".join(reasons), "", "{}", "{}"
-        return
-
-    run_dir = Path(state["run_dir"])
-    command = state["command"]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(SAM301_ROOT)
-
-    try:
-        training_process_manager.start(command, cwd=BOOK_ROOT, env=env)
-    except Exception as exc:
-        logger.exception("training_start_failed")
-        yield f"ERROR: failed to start training process: {exc!r}", "", "{}", "{}"
-        return
+        if reasons:
+            yield "BLOCKED:\n" + "\n".join(reasons), "", "{}", "{}"
+            return
+        run_dir = Path(state["run_dir"])
+        command = state["command"]
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(SAM301_ROOT)
+        try:
+            training_process_manager.start(
+                command,
+                cwd=BOOK_ROOT,
+                env=env,
+                on_finish=make_training_summary_callback(
+                    run_dir,
+                    command,
+                    state.get("runtime_yaml"),
+                    state.get("checkpoint"),
+                ),
+            )
+        except Exception as exc:
+            logger.exception("training_start_failed")
+            yield f"ERROR: failed to start training process: {exc!r}", "", "{}", "{}"
+            return
 
     while training_process_manager.is_running():
         snap = training_snapshot(run_dir)

@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import re
+import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from core.training_runner import validate_training_run_path
 from ui.process_manager import ProcessManager, ProcessState
 from ui.ui_utils import logger
 
 # A single module-level instance, distinct from ui.process_manager.inference_process_manager:
 # at most one active training task is allowed, independent of any active inference task.
 training_process_manager = ProcessManager()
+_summary_lock = threading.Lock()
+_finalized_summary_paths: set[str] = set()
 
 
 def validate_can_start_training(
@@ -46,12 +52,27 @@ def validate_can_start_training(
         reasons.append("这次训练预检已经被启动消费，请重新运行训练预检生成新的 run directory")
     if not run_dir or not Path(run_dir).exists():
         reasons.append(f"training run 目录不存在，请重新预检: {run_dir}")
-    elif (Path(run_dir) / "training_summary.json").exists():
-        reasons.append(f"training run 已经有 training_summary.json，拒绝复用旧 run directory: {run_dir}")
-    elif (Path(run_dir) / "checkpoints").exists() and any((Path(run_dir) / "checkpoints").iterdir()):
-        reasons.append(f"training run 已经有 checkpoint 产物，拒绝复用旧 run directory: {run_dir}")
+    else:
+        run_dir_path = Path(run_dir).expanduser().resolve(strict=False)
+        path_error = validate_training_run_path(run_dir_path)
+        if path_error:
+            reasons.append(f"{path_error}: {run_dir}")
+        elif (run_dir_path / "training_summary.json").exists():
+            reasons.append(f"training run 已经有 training_summary.json，拒绝复用旧 run directory: {run_dir}")
+        elif (run_dir_path / "checkpoints").exists() and any((run_dir_path / "checkpoints").iterdir()):
+            reasons.append(f"training run 已经有 checkpoint 产物，拒绝复用旧 run directory: {run_dir}")
     if not runtime_yaml or not Path(runtime_yaml).exists():
         reasons.append(f"runtime YAML 不存在，请重新预检: {runtime_yaml}")
+    elif run_dir:
+        runtime_path = Path(runtime_yaml).expanduser().resolve(strict=False)
+        run_dir_path = Path(run_dir).expanduser().resolve(strict=False)
+        runtime_path_error = validate_training_run_path(runtime_path)
+        if runtime_path_error:
+            reasons.append(f"{runtime_path_error}: runtime YAML: {runtime_yaml}")
+        try:
+            runtime_path.relative_to(run_dir_path)
+        except ValueError:
+            reasons.append(f"runtime YAML must remain inside run directory: {runtime_yaml}")
     if not checkpoint or not Path(checkpoint).exists():
         reasons.append(f"checkpoint 不存在: {checkpoint}")
     for label, value in [
@@ -163,18 +184,52 @@ def training_snapshot(run_dir: Path | None) -> dict[str, Any]:
     }
 
 
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, path)
+
+
+def _load_existing_summary(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def finalize_training_summary(
     run_dir: Path,
     command: list[str],
     runtime_config_path: str | None,
     initial_checkpoint: str | None,
+    log_text: str | None = None,
+    state: ProcessState | None = None,
 ) -> dict[str, Any]:
     """Write training_summary.json for a training run that has stopped (any status).
 
     Only lists checkpoint files that actually exist on disk — never invents a
     checkpoint path just because training reportedly completed.
     """
-    _, state = training_process_manager.snapshot()
+    summary_path = run_dir / "training_summary.json"
+    resolved_summary_path = str(summary_path.expanduser().resolve(strict=False))
+    with _summary_lock:
+        existing = _load_existing_summary(summary_path) if summary_path.exists() else None
+        if existing is not None and resolved_summary_path in _finalized_summary_paths:
+            return existing
+        if existing is not None and resolved_summary_path not in _finalized_summary_paths:
+            _finalized_summary_paths.add(resolved_summary_path)
+            return existing
+
+    if state is None:
+        captured_log, state = training_process_manager.snapshot()
+    else:
+        captured_log = log_text if log_text is not None else ""
     status = training_status_label(state)
     checkpoints_dir = run_dir / "checkpoints"
     discovered = sorted(str(p) for p in checkpoints_dir.iterdir() if p.is_file()) if checkpoints_dir.exists() else []
@@ -201,10 +256,34 @@ def finalize_training_summary(
         "initial_checkpoint": initial_checkpoint,
         "output_directory": str(run_dir),
         "discovered_checkpoint_files": discovered,
+        "stdout_stderr_tail": "\n".join((captured_log or "").splitlines()[-200:]),
         "warnings": warnings,
         "errors": errors,
     }
-    (run_dir / "training_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    with _summary_lock:
+        existing = _load_existing_summary(summary_path) if summary_path.exists() else None
+        if existing is not None:
+            _finalized_summary_paths.add(resolved_summary_path)
+            return existing
+        _atomic_write_json(summary_path, summary)
+        _finalized_summary_paths.add(resolved_summary_path)
     return summary
+
+
+def make_training_summary_callback(
+    run_dir: Path,
+    command: list[str],
+    runtime_config_path: str | None,
+    initial_checkpoint: str | None,
+):
+    def _callback(log_text: str, state: ProcessState) -> None:
+        finalize_training_summary(
+            run_dir,
+            command,
+            runtime_config_path,
+            initial_checkpoint,
+            log_text=log_text,
+            state=state,
+        )
+
+    return _callback

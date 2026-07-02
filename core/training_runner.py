@@ -22,6 +22,8 @@ from core.config import (
     SAM301_ROOT,
 )
 
+TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
+
 
 @dataclass(frozen=True)
 class PathCheck:
@@ -171,6 +173,30 @@ def _inside_workspace(path: Path) -> bool:
     return _inside(path, BOOK_ROOT) or _inside(path, SAM301_ROOT)
 
 
+def _inside_training_output_root(path: Path, root: Path | None = None) -> bool:
+    root = root or DEFAULT_TRAINING_RUN_ROOT
+    resolved_path = path.expanduser().resolve(strict=False)
+    resolved_root = root.expanduser().resolve(strict=False)
+    try:
+        resolved_path.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_training_output_root(path: Path, allow_external_output: bool = False) -> str | None:
+    if allow_external_output:
+        return None
+    resolved = path.expanduser().resolve(strict=False)
+    if not _inside_training_output_root(resolved):
+        return f"{TRAINING_OUTPUT_ROOT_ERROR} {DEFAULT_TRAINING_RUN_ROOT}"
+    return None
+
+
+def validate_training_run_path(path: Path, allow_external_output: bool = False) -> str | None:
+    return validate_training_output_root(path, allow_external_output=allow_external_output)
+
+
 def _path_kind(path: Path) -> str:
     if not path.exists():
         return "missing"
@@ -194,10 +220,7 @@ def check_path(path: Path, role: str, output: bool = False, allow_external_outpu
     warning = None
     error = None
     if not inside_workspace:
-        if output and not allow_external_output:
-            error = "output path is outside workspace"
-        else:
-            warning = "external read-only input path" if not output else "external output path"
+        warning = "external read-only input path" if not output else "external output path"
     if output:
         parent = resolved.parent if resolved.suffix else resolved
         if parent.exists() and not os.access(parent, os.W_OK):
@@ -218,7 +241,6 @@ def check_path(path: Path, role: str, output: bool = False, allow_external_outpu
 
 
 def unique_training_run_dir(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
     base = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     candidate = root / base
     suffix = 2
@@ -396,13 +418,17 @@ def inspect_training_config(
     allow_external_output: bool = False,
     prepare_runtime: bool = True,
 ) -> TrainingPreflight:
-    base_config = _resolve_existing_or_absolute(config_path)
-    train_script = _resolve_existing_or_absolute(train_script)
-    output_root = _resolve_existing_or_absolute(output_root)
-    exists = base_config.exists()
-    is_default = _same_file_or_path(base_config, DEFAULT_BOOK_SPINE_FINETUNE_CONFIG)
     warnings: list[str] = []
     errors: list[str] = []
+    base_config = _resolve_existing_or_absolute(config_path)
+    train_script = _resolve_existing_or_absolute(train_script)
+    try:
+        output_root = _resolve_existing_or_absolute(output_root if isinstance(output_root, Path) else Path(output_root))
+    except TypeError:
+        errors.append(f"output_root is not a valid path: {output_root!r}")
+        output_root = DEFAULT_TRAINING_RUN_ROOT.expanduser().resolve(strict=False)
+    exists = base_config.exists()
+    is_default = _same_file_or_path(base_config, DEFAULT_BOOK_SPINE_FINETUNE_CONFIG)
     warning = None if is_default else (
         "WARNING: selected config is not the default authoritative book-spine config: "
         f"{DEFAULT_BOOK_SPINE_FINETUNE_CONFIG}"
@@ -497,7 +523,16 @@ def inspect_training_config(
             val_annotations,
             output_root,
         )
-        run_dir = unique_training_run_dir(resolved_paths["output_root"]) if prepare_runtime else resolved_paths["output_root"]
+        output_root_error = validate_training_output_root(
+            resolved_paths["output_root"], allow_external_output=allow_external_output
+        )
+        if output_root_error:
+            errors.append(f"output_dir: {output_root_error}: {resolved_paths['output_root']}")
+        run_dir = (
+            unique_training_run_dir(resolved_paths["output_root"])
+            if prepare_runtime and not output_root_error
+            else resolved_paths["output_root"]
+        )
         runtime_config_path = run_dir / "config" / "runtime_config.yaml"
         command_config = runtime_config_path if prepare_runtime else base_config
 

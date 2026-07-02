@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ui.ui_utils import logger
 
@@ -42,6 +43,7 @@ class ProcessManager:
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
         self._state = ProcessState()
+        self._on_finish: Callable[[str, ProcessState], None] | None = None
 
     def is_running(self) -> bool:
         with self._lock:
@@ -63,11 +65,18 @@ class ProcessManager:
         except (ProcessLookupError, OSError):
             return None
 
-    def start(self, command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+    def start(
+        self,
+        command: list[str],
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        on_finish: Callable[[str, ProcessState], None] | None = None,
+    ) -> None:
         with self._lock:
             if self._state.running:
                 raise RuntimeError("A task is already running. Stop it before starting a new one.")
             self._log_lines = []
+            self._on_finish = on_finish
             self._state = ProcessState(
                 running=True,
                 command=list(command),
@@ -91,6 +100,7 @@ class ProcessManager:
                 self._state.running = False
                 self._state.returncode = None
                 self._state.finished_at = time.time()
+                self._on_finish = None
             self._process = None
             raise
         self._reader_thread = threading.Thread(target=self._read_output, daemon=True)
@@ -110,7 +120,16 @@ class ProcessManager:
                 self._state.running = False
                 self._state.returncode = returncode
                 self._state.finished_at = time.time()
+                log_text = "\n".join(self._log_lines)
+                state = ProcessState(**vars(self._state))
+                on_finish = self._on_finish
+                self._on_finish = None
             logger.info("process_finished returncode=%s stopped_by_user=%s", returncode, self._state.stopped_by_user)
+            if on_finish is not None:
+                try:
+                    on_finish(log_text, state)
+                except Exception:
+                    logger.exception("process_finish_callback_failed")
 
     @staticmethod
     def _signal_group(process: subprocess.Popen, sig: signal.Signals) -> None:
@@ -141,6 +160,9 @@ class ProcessManager:
                 logger.warning("process_terminate_timeout_killing_group pid=%s", process.pid)
                 self._signal_group(process, signal.SIGKILL)
                 process.wait(timeout=timeout)
+        reader_thread = self._reader_thread
+        if reader_thread is not None and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=timeout)
         # The reader thread drains remaining output and records returncode/finished_at;
         # captured stdout/stderr lines stay available via snapshot() after the stop.
 

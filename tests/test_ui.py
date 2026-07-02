@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import BOOK_ROOT, DEFAULT_SAM3_CHECKPOINT
+from core.config import BOOK_ROOT, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_RUN_ROOT
 
 REAL_RUN_DIR = BOOK_ROOT / "runs" / "inference" / "2026-07-02_12-28-40"
 INCOMPLETE_RUN_DIR = BOOK_ROOT / "runs" / "inference" / "2026-07-02_12-10-36"
@@ -552,8 +552,8 @@ class TrainingPreflightCallTest(unittest.TestCase):
     def test_inspect_training_config_does_not_start_training(self) -> None:
         from core.training_runner import inspect_training_config
 
-        with tempfile.TemporaryDirectory() as tmp:
-            output_root = Path(tmp) / "training_runs"
+        output_root = DEFAULT_TRAINING_RUN_ROOT / f"_test_ui_preflight_{id(self)}"
+        try:
             preflight = inspect_training_config(
                 training_prompt="book spine",
                 output_root=output_root,
@@ -567,6 +567,9 @@ class TrainingPreflightCallTest(unittest.TestCase):
                 self.assertTrue(Path(preflight.runtime_config_path).exists())
                 self.assertIn("train.py", " ".join(preflight.command))
                 self.assertIn("--num-gpus", preflight.command)
+        finally:
+            if output_root.exists():
+                shutil.rmtree(output_root)
 
     def test_training_page_wrapper_does_not_raise(self) -> None:
         from ui.training_preflight_page import run_training_preflight

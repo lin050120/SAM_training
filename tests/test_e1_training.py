@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -7,12 +8,19 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import BOOK_ROOT, DEFAULT_BOOK_SPINE_DATASET_ROOT, DEFAULT_BOOK_SPINE_FINETUNE_CONFIG, DEFAULT_SAM3_CHECKPOINT
+from core.config import (
+    BOOK_ROOT,
+    DEFAULT_BOOK_SPINE_DATASET_ROOT,
+    DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
+    DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_TRAINING_RUN_ROOT,
+)
 
 REAL_CONFIG_EXISTS = DEFAULT_BOOK_SPINE_FINETUNE_CONFIG.exists()
 REAL_CHECKPOINT_EXISTS = DEFAULT_SAM3_CHECKPOINT.exists()
@@ -21,9 +29,9 @@ _TRAINING_FIXTURES_AVAILABLE = REAL_CONFIG_EXISTS and REAL_CHECKPOINT_EXISTS and
 
 
 def _scratch_output_root(tag: str) -> Path:
-    """A temp output root inside runs/ so path-inside-workspace checks pass, always
+    """A temp output root inside runs/training so output-root confinement passes, always
     cleaned up by the caller."""
-    return BOOK_ROOT / "runs" / f"_test_e1_{tag}_{int(time.time() * 1000)}"
+    return DEFAULT_TRAINING_RUN_ROOT / f"_test_e1_{tag}_{int(time.time() * 1000)}"
 
 
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
@@ -363,24 +371,25 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
         self.assertTrue(any("已有一个训练任务" in r for r in reasons))
 
     def test_all_conditions_met_returns_empty(self) -> None:
-        from ui.training_process_manager import validate_can_start_training
+        import ui.training_process_manager as tpm
 
         with tempfile.TemporaryDirectory() as tmp:
             yaml_path = Path(tmp) / "runtime.yaml"
             yaml_path.write_text("x: 1")
             ckpt_path = Path(tmp) / "ckpt.pt"
             ckpt_path.write_text("fake")
-            reasons = validate_can_start_training(
-                **self._base_kwargs(
-                    run_dir=tmp,
-                    runtime_yaml=str(yaml_path),
-                    checkpoint=str(ckpt_path),
-                    train_images=tmp,
-                    train_annotations=tmp,
-                    val_images=tmp,
-                    val_annotations=tmp,
+            with mock.patch.object(tpm, "validate_training_run_path", return_value=None):
+                reasons = tpm.validate_can_start_training(
+                    **self._base_kwargs(
+                        run_dir=tmp,
+                        runtime_yaml=str(yaml_path),
+                        checkpoint=str(ckpt_path),
+                        train_images=tmp,
+                        train_annotations=tmp,
+                        val_images=tmp,
+                        val_annotations=tmp,
+                    )
                 )
-            )
         self.assertEqual(reasons, [])
 
     def test_consumed_preflight_blocks(self) -> None:
@@ -406,7 +415,7 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
         self.assertTrue(any("已经被启动消费" in r for r in reasons))
 
     def test_existing_training_artifacts_block_run_dir_reuse(self) -> None:
-        from ui.training_process_manager import validate_can_start_training
+        import ui.training_process_manager as tpm
 
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -416,21 +425,22 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
             ckpt_path.write_text("fake")
             (run_dir / "checkpoints").mkdir()
             (run_dir / "checkpoints" / "epoch_1.pt").write_text("old")
-            reasons = validate_can_start_training(
-                **self._base_kwargs(
-                    run_dir=str(run_dir),
-                    runtime_yaml=str(yaml_path),
-                    checkpoint=str(ckpt_path),
-                    train_images=tmp,
-                    train_annotations=tmp,
-                    val_images=tmp,
-                    val_annotations=tmp,
+            with mock.patch.object(tpm, "validate_training_run_path", return_value=None):
+                reasons = tpm.validate_can_start_training(
+                    **self._base_kwargs(
+                        run_dir=str(run_dir),
+                        runtime_yaml=str(yaml_path),
+                        checkpoint=str(ckpt_path),
+                        train_images=tmp,
+                        train_annotations=tmp,
+                        val_images=tmp,
+                        val_annotations=tmp,
+                    )
                 )
-            )
         self.assertTrue(any("checkpoint" in r and "拒绝复用" in r for r in reasons))
 
     def test_existing_training_summary_blocks_run_dir_reuse(self) -> None:
-        from ui.training_process_manager import validate_can_start_training
+        import ui.training_process_manager as tpm
 
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -439,17 +449,18 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
             ckpt_path = run_dir / "initial.pt"
             ckpt_path.write_text("fake")
             (run_dir / "training_summary.json").write_text("{}")
-            reasons = validate_can_start_training(
-                **self._base_kwargs(
-                    run_dir=str(run_dir),
-                    runtime_yaml=str(yaml_path),
-                    checkpoint=str(ckpt_path),
-                    train_images=tmp,
-                    train_annotations=tmp,
-                    val_images=tmp,
-                    val_annotations=tmp,
+            with mock.patch.object(tpm, "validate_training_run_path", return_value=None):
+                reasons = tpm.validate_can_start_training(
+                    **self._base_kwargs(
+                        run_dir=str(run_dir),
+                        runtime_yaml=str(yaml_path),
+                        checkpoint=str(ckpt_path),
+                        train_images=tmp,
+                        train_annotations=tmp,
+                        val_images=tmp,
+                        val_annotations=tmp,
+                    )
                 )
-            )
         self.assertTrue(any("training_summary.json" in r and "拒绝复用" in r for r in reasons))
 
 
@@ -472,8 +483,10 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.original_tpm_manager = tpm.training_process_manager
         self.original_detect_cuda = tpp.detect_cuda
         self.original_sleep = tpp.time.sleep
+        self.original_validate_training_run_path = tpm.validate_training_run_path
         tpp.training_process_manager = self.manager
         tpm.training_process_manager = self.manager
+        tpm.validate_training_run_path = lambda _path: None
         tpp.detect_cuda = lambda: SimpleNamespace(available=True, device_count=1)
         tpp.time.sleep = lambda _seconds: None
         tpp._consumed_preflight_tokens.clear()
@@ -481,10 +494,13 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
     def tearDown(self) -> None:
         if self.manager.is_running():
             self.manager.stop(timeout=1.0)
+        if self.manager._reader_thread is not None:
+            self.manager._reader_thread.join(timeout=2.0)
         self.tpp.training_process_manager = self.original_tpp_manager
         self.tpm.training_process_manager = self.original_tpm_manager
         self.tpp.detect_cuda = self.original_detect_cuda
         self.tpp.time.sleep = self.original_sleep
+        self.tpm.validate_training_run_path = self.original_validate_training_run_path
         self.tpp._consumed_preflight_tokens.clear()
         self.tmp.cleanup()
 
@@ -887,6 +903,294 @@ class FinalizeTrainingSummaryTest(unittest.TestCase):
         self.assertEqual(summary["discovered_checkpoint_files"], [])
 
 
+class TrainingSummaryBackgroundFinalizationTest(unittest.TestCase):
+    """Server-side process completion writes summary without any UI polling."""
+
+    def setUp(self) -> None:
+        from ui.process_manager import ProcessManager
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.manager = ProcessManager()
+
+    def tearDown(self) -> None:
+        if self.manager.is_running():
+            self.manager.shutdown()
+        if self.manager._reader_thread is not None:
+            self.manager._reader_thread.join(timeout=2.0)
+        self.tmp.cleanup()
+
+    def _run_dir(self, name: str) -> Path:
+        run_dir = self.base / name
+        (run_dir / "checkpoints").mkdir(parents=True)
+        return run_dir
+
+    def _wait_for_summary(self, run_dir: Path) -> dict:
+        summary_path = run_dir / "training_summary.json"
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if summary_path.exists():
+                return json.loads(summary_path.read_text(encoding="utf-8"))
+            time.sleep(0.05)
+        self.fail(f"summary was not written: {summary_path}")
+
+    def _start_with_callback(self, run_dir: Path, command: list[str]) -> None:
+        from ui.training_process_manager import make_training_summary_callback
+
+        self.manager.start(
+            command,
+            on_finish=make_training_summary_callback(run_dir, command, str(run_dir / "config.yaml"), "/fake/ckpt.pt"),
+        )
+
+    def test_completed_summary_is_written_without_ui_polling(self) -> None:
+        run_dir = self._run_dir("completed")
+        (run_dir / "checkpoints" / "epoch_1.pt").write_text("fake")
+        command = [
+            sys.executable,
+            "-c",
+            "import sys; print('stdout tail', flush=True); sys.stderr.write('stderr tail\\n'); sys.stderr.flush()",
+        ]
+        self._start_with_callback(run_dir, command)
+        summary = self._wait_for_summary(run_dir)
+
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(summary["exit_code"], 0)
+        self.assertGreaterEqual(summary["duration_seconds"], 0)
+        self.assertEqual(len(summary["discovered_checkpoint_files"]), 1)
+        self.assertIn("epoch_1.pt", summary["discovered_checkpoint_files"][0])
+        self.assertIn("stdout tail", summary["stdout_stderr_tail"])
+        self.assertIn("stderr tail", summary["stdout_stderr_tail"])
+        self.assertFalse(self.manager._reader_thread.is_alive())
+        self.assertIsNone(self.manager._on_finish)
+
+    def test_failed_summary_is_written_without_ui_polling_and_no_checkpoint_is_invented(self) -> None:
+        run_dir = self._run_dir("failed")
+        command = [sys.executable, "-c", "import sys; print('failing', flush=True); sys.exit(7)"]
+        self._start_with_callback(run_dir, command)
+        summary = self._wait_for_summary(run_dir)
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["exit_code"], 7)
+        self.assertEqual(summary["discovered_checkpoint_files"], [])
+        self.assertTrue(summary["errors"])
+        self.assertIn("failing", summary["stdout_stderr_tail"])
+
+    def test_cancelled_summary_is_written_from_shutdown_path(self) -> None:
+        run_dir = self._run_dir("cancelled")
+        command = [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"]
+        self._start_with_callback(run_dir, command)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            log_text, _ = self.manager.snapshot()
+            if "ready" in log_text:
+                break
+            time.sleep(0.05)
+
+        self.manager.shutdown()
+        summary = self._wait_for_summary(run_dir)
+        self.assertEqual(summary["status"], "cancelled")
+        self.assertNotEqual(summary["exit_code"], 0)
+        self.assertIn("ready", summary["stdout_stderr_tail"])
+
+    def test_summary_finalization_is_idempotent_and_json_stays_valid_under_concurrent_calls(self) -> None:
+        from ui.process_manager import ProcessState
+        from ui.training_process_manager import finalize_training_summary
+
+        run_dir = self._run_dir("concurrent_finalize")
+        state = ProcessState(
+            running=False,
+            returncode=0,
+            command=["fake"],
+            started_at=time.time(),
+            finished_at=time.time(),
+        )
+        results = []
+
+        def finalize_once() -> None:
+            results.append(finalize_training_summary(run_dir, ["fake"], None, None, log_text="tail", state=state))
+
+        threads = [threading.Thread(target=finalize_once), threading.Thread(target=finalize_once)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
+        summary = json.loads((run_dir / "training_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(list(run_dir.glob(".training_summary.json.*.tmp")), [])
+
+    def test_training_run_history_reads_disk_summary_after_session_state_is_gone(self) -> None:
+        from ui.run_reader import list_training_runs
+
+        run_dir = self._run_dir("history")
+        command = [sys.executable, "-c", "print('done')"]
+        self._start_with_callback(run_dir, command)
+        self._wait_for_summary(run_dir)
+
+        rows = list_training_runs(self.base)
+        self.assertEqual(rows[0]["run_id"], "history")
+        self.assertEqual(rows[0]["status"], "completed")
+        self.assertEqual(rows[0]["training_summary"]["status"], "completed")
+
+    def test_normal_atomic_summary_write_leaves_no_temp_file(self) -> None:
+        from ui.process_manager import ProcessState
+        from ui.training_process_manager import finalize_training_summary
+
+        run_dir = self._run_dir("atomic")
+        state = ProcessState(running=False, returncode=0, started_at=time.time(), finished_at=time.time())
+        finalize_training_summary(run_dir, ["fake"], None, None, log_text="tail", state=state)
+
+        self.assertTrue((run_dir / "training_summary.json").exists())
+        self.assertEqual(list(run_dir.glob(".training_summary.json.*.tmp")), [])
+        json.loads((run_dir / "training_summary.json").read_text(encoding="utf-8"))
+
+
+@unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+class TrainingOutputConfinementTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.allowed_root = self.base / "runs" / "training"
+        self.patcher = mock.patch("core.training_runner.DEFAULT_TRAINING_RUN_ROOT", self.allowed_root)
+        self.patcher.start()
+
+    def tearDown(self) -> None:
+        self.patcher.stop()
+        self.tmp.cleanup()
+
+    def _inspect(self, output_root: Path, prepare_runtime: bool = True):
+        from core.training_runner import inspect_training_config
+
+        return inspect_training_config(
+            training_prompt="book spine",
+            output_root=output_root,
+            prepare_runtime=prepare_runtime,
+        )
+
+    def test_canonical_output_root_is_allowed_and_creates_run_under_root(self) -> None:
+        preflight = self._inspect(self.allowed_root)
+        self.assertEqual(preflight.errors, [])
+        self.assertTrue(Path(preflight.run_dir).resolve(strict=False).relative_to(self.allowed_root.resolve(strict=False)))
+        self.assertTrue(Path(preflight.runtime_config_path).exists())
+
+    def test_allowed_subdirectory_with_space_and_japanese_is_allowed(self) -> None:
+        output_root = self.allowed_root / "sub dir 日本語"
+        preflight = self._inspect(output_root)
+        self.assertEqual(preflight.errors, [])
+        Path(preflight.run_dir).resolve(strict=False).relative_to(output_root.resolve(strict=False))
+
+    def test_relative_path_inside_allowed_root_is_allowed(self) -> None:
+        relative = self.allowed_root / "relative_ok" / ".." / "relative_ok"
+        preflight = self._inspect(relative)
+        self.assertEqual(preflight.errors, [])
+        Path(preflight.run_dir).resolve(strict=False).relative_to(self.allowed_root.resolve(strict=False))
+
+    def test_illegal_output_roots_are_rejected_without_creating_them(self) -> None:
+        illegal_paths = [
+            self.base / "runs" / "training_evil",
+            self.allowed_root / ".." / ".." / "data",
+            self.base / "tmp_training",
+            Path("/home/book/sam301"),
+            Path("/home/book/book"),
+            DEFAULT_BOOK_SPINE_DATASET_ROOT,
+            DEFAULT_SAM3_CHECKPOINT.parent,
+        ]
+        for path in illegal_paths:
+            with self.subTest(path=str(path)):
+                existed_before = path.exists()
+                preflight = self._inspect(path)
+                self.assertTrue(any("Training output must remain under" in e for e in preflight.errors))
+                if not existed_before:
+                    self.assertFalse(path.exists(), f"invalid output path was created: {path}")
+
+    def test_symlink_escape_is_rejected(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        self.allowed_root.mkdir(parents=True)
+        link = self.allowed_root / "link_to_outside"
+        link.symlink_to(outside, target_is_directory=True)
+
+        preflight = self._inspect(link)
+        self.assertTrue(any("Training output must remain under" in e for e in preflight.errors))
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_direct_core_api_rejects_external_output_root(self) -> None:
+        preflight = self._inspect(Path("/tmp/training"), prepare_runtime=False)
+        self.assertTrue(any("Training output must remain under" in e for e in preflight.errors))
+
+    def test_empty_string_and_non_path_output_roots_are_rejected(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        empty = inspect_training_config(training_prompt="book spine", output_root="", prepare_runtime=False)
+        self.assertTrue(any("Training output must remain under" in e for e in empty.errors))
+
+        non_path = inspect_training_config(training_prompt="book spine", output_root=float("nan"), prepare_runtime=False)
+        self.assertTrue(any("output_root is not a valid path" in e for e in non_path.errors))
+
+    def test_start_validation_rejects_tampered_runtime_yaml_outside_run_dir(self) -> None:
+        from ui.training_process_manager import validate_can_start_training
+
+        run_dir = self.allowed_root / "run"
+        run_dir.mkdir(parents=True)
+        (run_dir / "checkpoints").mkdir()
+        runtime_yaml = self.base / "outside_runtime.yaml"
+        runtime_yaml.write_text("x: 1")
+        checkpoint = self.base / "initial.pt"
+        checkpoint.write_text("fake")
+        reasons = validate_can_start_training(
+            preflight_ok=True,
+            run_dir=str(run_dir),
+            runtime_yaml=str(runtime_yaml),
+            checkpoint=str(checkpoint),
+            train_images=str(self.base),
+            train_annotations=str(self.base),
+            val_images=str(self.base),
+            val_annotations=str(self.base),
+            confirmed=True,
+            already_running=False,
+            cuda_available=True,
+            requested_num_gpus=1,
+            cuda_device_count=1,
+        )
+        self.assertTrue(any("runtime YAML" in r and "Training output must remain under" in r for r in reasons))
+
+    def test_existing_summary_or_checkpoint_in_run_dir_blocks_start(self) -> None:
+        from ui.training_process_manager import validate_can_start_training
+
+        for marker in ["summary", "checkpoint"]:
+            with self.subTest(marker=marker):
+                run_dir = self.allowed_root / marker
+                run_dir.mkdir(parents=True)
+                (run_dir / "checkpoints").mkdir(exist_ok=True)
+                runtime_yaml = run_dir / "config" / "runtime_config.yaml"
+                runtime_yaml.parent.mkdir()
+                runtime_yaml.write_text("x: 1")
+                checkpoint = self.base / f"{marker}.pt"
+                checkpoint.write_text("fake")
+                if marker == "summary":
+                    (run_dir / "training_summary.json").write_text("{}")
+                else:
+                    (run_dir / "checkpoints" / "epoch.pt").write_text("fake")
+                reasons = validate_can_start_training(
+                    preflight_ok=True,
+                    run_dir=str(run_dir),
+                    runtime_yaml=str(runtime_yaml),
+                    checkpoint=str(checkpoint),
+                    train_images=str(self.base),
+                    train_annotations=str(self.base),
+                    val_images=str(self.base),
+                    val_annotations=str(self.base),
+                    confirmed=True,
+                    already_running=False,
+                    cuda_available=True,
+                    requested_num_gpus=1,
+                    cuda_device_count=1,
+                )
+                self.assertTrue(any("拒绝复用" in r for r in reasons))
+
+
 class TrainingMetricParsingTest(unittest.TestCase):
     def test_parses_common_fields_when_present(self) -> None:
         from ui.training_process_manager import parse_training_metrics
@@ -960,7 +1264,7 @@ class UnicodeAndSpacePathTest(unittest.TestCase):
     def test_output_root_with_space_and_unicode(self) -> None:
         from core.training_runner import inspect_training_config
 
-        output_root = BOOK_ROOT / "runs" / "训练 输出 テスト"
+        output_root = DEFAULT_TRAINING_RUN_ROOT / "训练 输出 テスト"
         try:
             preflight = inspect_training_config(
                 training_prompt="book spine",
@@ -976,28 +1280,32 @@ class UnicodeAndSpacePathTest(unittest.TestCase):
     def test_validate_can_start_training_with_unicode_space_paths(self) -> None:
         from ui.training_process_manager import validate_can_start_training
 
-        run_dir = self.base / "run 実行 中文"
+        run_dir = DEFAULT_TRAINING_RUN_ROOT / f"run 実行 中文 {int(time.time() * 1000)}"
         run_dir.mkdir()
-        yaml_path = run_dir / "runtime.yaml"
-        yaml_path.write_text("x: 1")
-        ckpt_path = self.base / "check point 模型.pt"
-        ckpt_path.write_text("fake")
-        reasons = validate_can_start_training(
-            preflight_ok=True,
-            run_dir=str(run_dir),
-            runtime_yaml=str(yaml_path),
-            checkpoint=str(ckpt_path),
-            train_images=str(self.base),
-            train_annotations=str(self.base),
-            val_images=str(self.base),
-            val_annotations=str(self.base),
-            confirmed=True,
-            already_running=False,
-            cuda_available=True,
-            requested_num_gpus=1,
-            cuda_device_count=1,
-        )
-        self.assertEqual(reasons, [])
+        try:
+            yaml_path = run_dir / "runtime.yaml"
+            yaml_path.write_text("x: 1")
+            ckpt_path = self.base / "check point 模型.pt"
+            ckpt_path.write_text("fake")
+            reasons = validate_can_start_training(
+                preflight_ok=True,
+                run_dir=str(run_dir),
+                runtime_yaml=str(yaml_path),
+                checkpoint=str(ckpt_path),
+                train_images=str(self.base),
+                train_annotations=str(self.base),
+                val_images=str(self.base),
+                val_annotations=str(self.base),
+                confirmed=True,
+                already_running=False,
+                cuda_available=True,
+                requested_num_gpus=1,
+                cuda_device_count=1,
+            )
+            self.assertEqual(reasons, [])
+        finally:
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
 
 
 if __name__ == "__main__":

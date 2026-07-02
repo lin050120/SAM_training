@@ -65,7 +65,7 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
   - `dataset_info.json`：解析后的绝对路径、COCO 摘要、`requested_*`/resolved 的所有覆盖参数。
   - `command.txt`：最终训练命令的文本形式。
   - `logs/`、`checkpoints/`：训练器会往这两个目录写文件（本轮预检阶段只是预先创建空目录）。
-- `output_root` 必须位于 `/home/book/book01` 或 `/home/book/sam301` 内部，否则报错，除非显式传 `allow_external_output=True`（目前 UI 没有暴露这个开关，等于总是要求写在工作区内）。
+- `output_root` 必须解析到 canonical training output root `/home/book/book01/runs/training` 本身或它的真实子目录下。后端使用 `Path.expanduser().resolve(strict=False)` 和 `Path.relative_to()` 做服务端 allowlist 校验，不使用字符串前缀判断；`/home/book/book01/runs/training_evil`、`..` 逃逸、指向外部的 symlink、`/tmp`、`/home/book/sam301`、数据目录和 checkpoint 目录都会被拒绝。路径错误时不会先创建外部目录。
 
 ## 4. 如何启动训练
 
@@ -81,11 +81,12 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 8. CUDA 可用（`torch.cuda.is_available()`，在 UI 进程内检测）；
 9. 请求的 `num_gpus` 不超过实际检测到的 GPU 数量；
 10. 本次预检启动凭证尚未被消费；
-11. run directory 中不存在 `training_summary.json`，且 `checkpoints/` 下没有已有 checkpoint 产物。
+11. run directory 中不存在 `training_summary.json`，且 `checkpoints/` 下没有已有 checkpoint 产物；
+12. run directory 和 runtime YAML 解析后仍位于 `/home/book/book01/runs/training` 下，runtime YAML 也必须位于本次 run directory 内。
 
 **任何一项不满足都会拒绝启动，并把所有不满足的原因一次性显示出来，不会启动一半再失败。**
 
-启动操作在服务端临界区内完成校验和消费：一旦校验通过，启动凭证会在创建子进程之前立即标记为已消费。因此双击按钮、两个并发 callback、训练完成后再次点击、训练失败后再次点击、用户取消后再次点击，都会被服务端拒绝复用旧预检。即使 `subprocess.Popen` 自身失败，该预检也不会自动恢复；安全做法是重新执行预检，生成新的 run directory 和新的 runtime YAML 后再启动。
+启动操作在服务端临界区内完成校验、消费和 `subprocess.Popen` 创建：一旦校验通过，启动凭证会在创建子进程之前立即标记为已消费。因此双击按钮、两个并发 callback、训练完成后再次点击、训练失败后再次点击、用户取消后再次点击，都会被服务端拒绝复用旧预检。即使 `subprocess.Popen` 自身失败，该预检也不会自动恢复；安全做法是重新执行预检，生成新的 run directory 和新的 runtime YAML 后再启动。
 
 参数修改后旧预检立即失效：阶段 A 的每一个输入框都绑定了 `.change()` 事件（`ui/training_preflight_page.py::invalidate_preflight()`），一旦触发就把服务端保存的 `preflight_state` 直接清空（不是只改前端显示），所以哪怕用户改完参数后没重新点预检就去点"启动训练"，`validate_can_start_training()` 在服务端看到的 `preflight_ok` 已经是 `False`，照样会被拒绝——这个保证是在服务端状态层面做的，不依赖浏览器端按钮是否被正确禁用。
 
@@ -107,13 +108,14 @@ conda run -n sam3 python \
 - 子进程用 `start_new_session=True` 启动（复用阶段 D1.1 已经验证过的 `ui/process_manager.py::ProcessManager`，训练页面新建了一个独立实例 `ui/training_process_manager.py::training_process_manager`，和推理页面的 `inference_process_manager`互不影响，两边可以各自最多一个活动任务）。
 - 停止时对整个进程组先 `SIGTERM`，等待超时后 `SIGKILL`（`os.killpg`），`conda run` 派生的真正训练进程（孙进程）也会被一并终止。
 - UI 进程正常退出时，训练进程管理器通过 `atexit.register(...)` 注册的钩子会调用 `training_process_manager.shutdown()`，尝试停止任何仍在运行的训练任务（同样复用 D1.1 的机制）。该清理先发 `SIGTERM`，等待合理超时后再发 `SIGKILL`。
-- 停止后的状态标记为 `cancelled`（区别于训练自己失败退出的 `failed` 和正常结束的 `completed`），并会照常生成 `training_summary.json`。
+- 停止后的状态标记为 `cancelled`（区别于训练自己失败退出的 `failed` 和正常结束的 `completed`），并会由服务端后台完成回调照常生成 `training_summary.json`。
 - `kill -9`、机器断电、内核崩溃等非正常解释器退出不会执行 `atexit`，因此不保证这些情况下自动清理训练进程。
 
 ## 6. 日志位置
 
 - 训练子进程的 stdout/stderr 会被实时捕获并显示在页面的日志框里（`ui/training_process_manager.py::training_snapshot()` 每次轮询取一次全量快照）。
 - 完整原始日志会一直保留在内存快照里，训练结束（含被停止）后仍可在页面上看到全部历史输出。
+- `training_summary.json` 由服务端进程生命周期回调生成：reader 线程读完 stdout/stderr、记录 exit code 和 finished_at 后原子写入 summary。浏览器关闭、刷新、网络断开或不再调用 Gradio polling callback，都不影响 completed/failed/cancelled 最终落盘。UI 轮询只负责显示当前状态；浏览器重新连接后，历史页面从磁盘读取 `training_summary.json` 恢复最终状态。
 - 官方训练器自己也会往 `<run_dir>/logs/book_spine/` 和 `<run_dir>/tensorboard/` 写日志（runtime YAML 里的 `trainer.logging.log_dir`/`trainer.logging.tensorboard_writer.log_dir` 已经指向本次 run 目录），这是训练器自身的行为，UI 没有改动。
 
 ## 7. Checkpoint 位置
@@ -129,7 +131,7 @@ Runtime YAML 把 `trainer.checkpoint.save_dir` 指向 `<run_dir>/checkpoints`，
 - 进程自己退出且 exit code 为 0 → `completed`
 - 进程自己退出且 exit code 非 0 → `failed`
 
-`completed` 但 `checkpoints/` 目录下没有任何文件时，`training_summary.json` 会额外记一条 warning（"训练报告 exit code 0，但 checkpoints/ 目录下没有找到任何文件"），不会因为 exit code 是 0 就默认一切正常。
+`completed` 但 `checkpoints/` 目录下没有任何文件时，`training_summary.json` 会额外记一条 warning（"训练报告 exit code 0，但 checkpoints/ 目录下没有找到任何文件"），不会因为 exit code 是 0 就默认一切正常。summary 写入使用临时文件 + `os.replace()` 原子替换，并且 finalization 幂等，避免 UI callback 和后台回调同时写入导致损坏 JSON。
 
 ## 9. 训练指标解析（best-effort，未经真实日志验证）
 
@@ -141,9 +143,11 @@ Runtime YAML 把 `trainer.checkpoint.save_dir` 指向 `<run_dir>/checkpoints`，
 
 ## 11. 本轮未实际运行训练
 
-本轮所有训练编排测试（`tests/test_e1_training.py`，当前 59 个用例）全部使用假的 `python3 -c "..."` 命令（比如 `print('epoch 1 loss 1.0')`、`sleep`、`sys.exit(N)`），从未 import 或调用 SAM3 的训练器，从未占用 GPU，从未产生真实 checkpoint。唯一一次真实调用的是 `core.training_runner.inspect_training_config()`（预检本身），它只读取真实的基础 YAML/checkpoint 路径/数据集做路径检查和 COCO 统计，不加载模型、不跑前向传播。
+本轮所有训练编排测试（`tests/test_e1_training.py`，当前 74 个用例）全部使用假的 `python3 -c "..."` 命令（比如 `print('epoch 1 loss 1.0')`、`sleep`、`sys.exit(N)`），从未 import 或调用 SAM3 的训练器，从未占用 GPU，从未产生真实 checkpoint。唯一一次真实调用的是 `core.training_runner.inspect_training_config()`（预检本身），它只读取真实的基础 YAML/checkpoint 路径/数据集做路径检查和 COCO 统计，不加载模型、不跑前向传播。
 
 E1 P1 修复轮同样没有运行真实 SAM3 训练；新增测试仍只使用假短进程验证一次性 preflight、并发启动拒绝和训练退出清理。
+
+E1 P2 修复轮继续只使用假短进程和临时目录，验证服务端后台 summary finalization、浏览器 session 消失后的磁盘恢复、原子 summary 写入，以及 output root canonical allowlist/symlink/路径逃逸防护。
 
 ## 12. 用户如何在普通终端做最小训练测试
 
