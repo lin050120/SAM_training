@@ -84,7 +84,8 @@ effective_batch_size = train_batch_size × num_gpus × gradient_accumulation_ste
 10. 本次预检启动凭证尚未被消费；
 11. run directory 中不存在 `training_summary.json`，且 `checkpoints/` 下没有已有 checkpoint 产物；
 12. run directory 和 runtime YAML 解析后仍位于 `/home/book/book01/runs/training` 下，runtime YAML 也必须位于本次 run directory 内；
-13. 轻量 import guard 在与真实训练相同的 `sam301` Conda 环境、cwd 和子进程 env 下确认 `import sam3` 解析到 `/home/book/sam301/sam3/__init__.py`。
+13. 轻量 import guard 在与真实训练相同的 `sam301` Conda 环境、cwd 和子进程 env 下确认 `import sam3` 解析到 `/home/book/sam301/sam3/__init__.py`；
+14. SAM301 trainer 补丁守卫：`sam3/train/trainer.py` 的完整 SHA256 必须等于 `config/sam301_patch_manifest.json` 记录的 patched hash——预检（写 runtime YAML 前）、启动（消费 token 前，防预检后文件被替换，不消费 token）、训练子进程（wrapper 调官方 main 前）三层 fail-closed；修复命令与 apply/revert 流程见 `docs/SAM301_PATCH_MANAGEMENT.md`。
 
 训练子进程命令和 import guard 都使用统一配置中的 `DEFAULT_CONDA_ENV=sam301`。子进程会防御性设置 `PYTHONPATH=/home/book/sam301[:existing]`，但 `sam301` 环境本身在移除 `PYTHONPATH` 时也必须能正确导入 `/home/book/sam301/sam3`；如果 guard 失败，系统不会创建 trainer 进程。
 

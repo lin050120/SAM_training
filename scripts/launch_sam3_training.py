@@ -54,7 +54,34 @@ def compose_runtime_config(config_path: str | Path):
     return cfg
 
 
+def _verify_sam301_patch_or_die() -> None:
+    """Last-line fail-closed guard inside the actual training subprocess.
+
+    Stdlib-only re-implementation of the manifest hash check (this script must not
+    depend on book01 imports): the trainer file must match the manifest's patched
+    SHA256 exactly, otherwise training is refused.
+    """
+    import hashlib
+    import json
+
+    manifest_path = Path(__file__).resolve().parent.parent / "config" / "sam301_patch_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        target = Path(manifest["target_file"])
+        expected = manifest["patched_sha256"]
+        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+    except Exception as exc:
+        raise SystemExit(f"sam301 patch guard: cannot evaluate {manifest_path}: {exc!r}; refusing to train")
+    if actual != expected:
+        raise SystemExit(
+            f"sam301 patch guard: {target} sha256={actual} != expected patched {expected}; "
+            "refusing to train. Run: conda run -n sam301 python scripts/manage_sam301_patch.py verify"
+        )
+
+
 def run_training(config_path: str | Path, num_gpus: int | None, num_nodes: int | None, use_cluster: int | None) -> None:
+    _verify_sam301_patch_or_die()
+
     from hydra import initialize_config_dir
 
     # Same pre-main setup as train.py's own __main__ block.

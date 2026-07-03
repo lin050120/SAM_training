@@ -27,6 +27,8 @@ from core.config import (
     SAM301_ROOT,
 )
 
+from core.sam301_patch import verify_patched_for_training
+
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
 
 
@@ -846,6 +848,14 @@ def inspect_training_config(
                     f"batch size ({effective}); drop_last=True will drop "
                     f"{train_coco.images % effective} image(s) every epoch"
                 )
+
+        # SAM301 patch guard (preflight side): a launchable run (runtime YAML +
+        # token) must never be prepared while the trainer is not exactly the
+        # expected patched hash — fail closed before anything is written.
+        if prepare_runtime:
+            patch_guard_error = verify_patched_for_training()
+            if patch_guard_error:
+                errors.append(f"sam301 patch guard: {patch_guard_error}")
 
         if prepare_runtime and run_dir.exists() and any(run_dir.iterdir()):
             errors.append(f"output directory already exists and is non-empty: {run_dir}")

@@ -17,6 +17,7 @@ from core.config import (
     DEFAULT_SAM3_CHECKPOINT,
     DEFAULT_TRAINING_RUN_ROOT,
 )
+from core.sam301_patch import verify_patched_for_training
 from core.training_runner import training_subprocess_env
 from ui.training_process_manager import (
     finalize_training_summary,
@@ -194,6 +195,12 @@ def _consume_preflight_for_launch(
     )
     if not token:
         reasons.append("预检启动凭证缺失，请重新运行训练预检")
+    # SAM301 patch guard (launcher side): re-check the trainer hash right before the
+    # token would be consumed, so a file replaced after preflight is caught here and
+    # the token is NOT burned.
+    patch_guard_error = verify_patched_for_training()
+    if patch_guard_error:
+        reasons.append(f"sam301 patch guard: {patch_guard_error}")
     if reasons:
         return reasons
     _consumed_preflight_tokens.add(str(token))

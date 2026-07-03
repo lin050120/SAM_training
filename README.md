@@ -26,6 +26,19 @@ UI process's CUDA detection reflects the terminal's real GPU visibility. Listens
 when `device=cuda` is requested but CUDA is unavailable in the UI process, it refuses
 to start inference instead of silently falling back to CPU.
 
+## SAM301 Trainer Patch Guard
+
+`/home/book/sam301` is not a git tree; the grad-accum loss-scaling patch on
+`sam3/train/trainer.py` is pinned by full SHA256 in `config/sam301_patch_manifest.json`
+and enforced fail-closed by preflight, the launcher, and the training subprocess.
+Before formal training (and after any sam301 rebuild) run:
+
+```bash
+conda run -n sam301 python scripts/manage_sam301_patch.py verify   # must exit 0 (PATCHED)
+```
+
+`status` / `apply` / `revert` are also available; see `docs/SAM301_PATCH_MANAGEMENT.md`.
+
 ## Authoritative SAM3 Training Config
 
 The default book-spine fine-tuning config for this workspace is:
