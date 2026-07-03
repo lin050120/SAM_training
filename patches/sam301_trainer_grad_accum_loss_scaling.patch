@@ -1,0 +1,18 @@
+--- /tmp/claude-1001/-home-book-claude-workspace/2fa662bf-b51d-4db5-91b6-d2688dd0674a/scratchpad/trainer.py.orig	2026-07-03 10:10:24.991726714 +0900
++++ /home/book/sam301/sam3/train/trainer.py	2026-07-03 10:10:40.103888129 +0900
+@@ -958,7 +958,14 @@
+                     else:
+                         return
+ 
+-                self.scaler.scale(loss).backward()
++                # Gradient accumulation: scale ONLY the loss used for backward by
++                # 1/accum_steps so that summing accum_steps micro-batch gradients
++                # equals the gradient of the MEAN loss over those micro-batches
++                # (true effective-batch semantics at unchanged learning rate).
++                # accum_steps == 1 keeps the original behavior bit-for-bit. The
++                # finite-check above and the meters below keep the raw loss.
++                backward_loss = loss / accum_steps if accum_steps > 1 else loss
++                self.scaler.scale(backward_loss).backward()
+                 loss_mts[loss_key].update(loss.item(), batch_size)
+                 for extra_loss_key, extra_loss in extra_losses.items():
+                     if extra_loss_key not in extra_loss_mts:
