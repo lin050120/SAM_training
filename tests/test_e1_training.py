@@ -52,10 +52,13 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
 
         from core.training_runner import inspect_training_config
 
+        # effective batch must stay <= the real 8-image train set: the R-5 preflight
+        # guard now (correctly) rejects effective batches larger than the dataset,
+        # and that rejection has its own dedicated test in PreflightGuardsTest.
         preflight = inspect_training_config(
             max_epochs=3,
             train_batch_size=2,
-            gradient_accumulation_steps=8,
+            gradient_accumulation_steps=4,
             learning_rate=0.0001,
             num_workers=4,
             training_prompt="book spine",
@@ -65,15 +68,15 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         self.assertEqual(preflight.errors, [])
         self.assertEqual(preflight.max_epochs, 3)
         self.assertEqual(preflight.train_batch_size, 2)
-        self.assertEqual(preflight.gradient_accumulation_steps, 8)
+        self.assertEqual(preflight.gradient_accumulation_steps, 4)
         self.assertEqual(preflight.learning_rate, 0.0001)
         self.assertEqual(preflight.num_workers, 4)
-        self.assertEqual(preflight.effective_batch_size, 2 * 1 * 8)
+        self.assertEqual(preflight.effective_batch_size, 2 * 1 * 4)
 
         cfg = OmegaConf.load(preflight.runtime_config_path)
         self.assertEqual(OmegaConf.select(cfg, "trainer.max_epochs"), 3)
         self.assertEqual(OmegaConf.select(cfg, "scratch.train_batch_size"), 2)
-        self.assertEqual(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"), 8)
+        self.assertEqual(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"), 4)
         self.assertEqual(OmegaConf.select(cfg, "scratch.num_train_workers"), 4)
         self.assertAlmostEqual(OmegaConf.select(cfg, "scratch.lr_transformer"), 0.0001)
         # val workers and the frozen backbone LRs must stay untouched
@@ -529,6 +532,93 @@ class GradAccumWiringTest(unittest.TestCase):
             self.assertNotIn("num_chunks", cfg.scratch.collate_fn)
             self.assertEqual(OmegaConf.select(cfg, "trainer.data.train.batch_size"), 1)
             self.assertEqual(preflight.effective_batch_size, 1)
+
+
+class PreflightGuardsTest(unittest.TestCase):
+    """R-4: missing scratch keys must give clean errors, never int(None) TypeError.
+    R-5: train set smaller than the effective batch must be rejected (drop_last=True
+    would otherwise 'complete' an epoch with zero optimizer steps)."""
+
+    def test_missing_scratch_keys_produce_clean_preflight_error(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_config = Path(tmp) / "no_scratch.yaml"
+            bad_config.write_text("trainer:\n  max_epochs: 1\n", encoding="utf-8")
+            preflight = inspect_training_config(
+                config_path=bad_config,
+                prepare_runtime=False,
+            )
+        self.assertTrue(
+            any("scratch.train_batch_size is missing" in e for e in preflight.errors),
+            preflight.errors,
+        )
+        self.assertTrue(
+            any("scratch.gradient_accumulation_steps is missing" in e for e in preflight.errors),
+            preflight.errors,
+        )
+
+    def test_write_runtime_yaml_missing_keys_raises_clean_valueerror(self) -> None:
+        from core.training_runner import write_runtime_yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_config = Path(tmp) / "no_scratch.yaml"
+            bad_config.write_text("trainer:\n  max_epochs: 1\n", encoding="utf-8")
+            paths = {
+                "initial_checkpoint": Path(tmp) / "ckpt.pt",
+                "bpe_path": Path(tmp) / "bpe.gz",
+                "train_images": Path(tmp),
+                "train_annotations": Path(tmp) / "t.json",
+                "val_images": Path(tmp),
+                "val_annotations": Path(tmp) / "v.json",
+            }
+            with self.assertRaises(ValueError) as ctx:
+                write_runtime_yaml(bad_config, Path(tmp) / "out" / "runtime.yaml", paths, Path(tmp) / "run")
+        self.assertIn("scratch.train_batch_size", str(ctx.exception))
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_train_smaller_than_effective_batch_is_rejected(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            # real train set has 8 images; effective = 1 x 16 x 1 = 16 > 8
+            preflight = inspect_training_config(
+                training_prompt="book spine",
+                max_epochs=1,
+                train_batch_size=1,
+                gradient_accumulation_steps=16,
+                output_root=Path(tmp),
+                prepare_runtime=True,
+                collect_import_metadata=False,
+            )
+            self.assertTrue(
+                any("smaller than the effective batch size" in e for e in preflight.errors),
+                preflight.errors,
+            )
+            # runtime YAML must not be written for a rejected run
+            self.assertFalse(Path(preflight.runtime_config_path).exists())
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_non_divisible_effective_batch_warns_but_allows(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            # 8 images, effective = 3 -> 2 full outer batches, 2 images dropped
+            preflight = inspect_training_config(
+                training_prompt="book spine",
+                max_epochs=1,
+                train_batch_size=1,
+                gradient_accumulation_steps=3,
+                output_root=Path(tmp),
+                prepare_runtime=True,
+                collect_import_metadata=False,
+            )
+            self.assertEqual(preflight.errors, [])
+            self.assertTrue(
+                any("not divisible by the effective batch size" in w for w in preflight.warnings),
+                preflight.warnings,
+            )
+            self.assertTrue(Path(preflight.runtime_config_path).exists())
 
 
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")

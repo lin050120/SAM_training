@@ -582,8 +582,17 @@ def write_runtime_yaml(
     # (copied from a grad_accum=1 template) uses plain collate_fn_api and
     # batch_size=${scratch.train_batch_size}; without this wiring any accum>1 run
     # fails with "Expected a list of batches, got <class 'dict'>".
-    effective_accum = int(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"))
-    effective_micro_batch = int(OmegaConf.select(cfg, "scratch.train_batch_size"))
+    raw_accum = OmegaConf.select(cfg, "scratch.gradient_accumulation_steps")
+    raw_micro_batch = OmegaConf.select(cfg, "scratch.train_batch_size")
+    if raw_accum is None or raw_micro_batch is None:
+        raise ValueError(
+            "base config must define scratch.train_batch_size and "
+            "scratch.gradient_accumulation_steps (or overrides must be provided); "
+            f"got train_batch_size={raw_micro_batch!r}, "
+            f"gradient_accumulation_steps={raw_accum!r}"
+        )
+    effective_accum = int(raw_accum)
+    effective_micro_batch = int(raw_micro_batch)
     if effective_accum > 1:
         OmegaConf.update(
             cfg,
@@ -726,6 +735,21 @@ def inspect_training_config(
                 "authoritative base YAML expression is left untouched either way."
             )
 
+        # R-4: these two scratch keys are load-bearing for the accumulation wiring
+        # in write_runtime_yaml (int(None) would otherwise raise TypeError there for
+        # non-default base configs). Reject missing/invalid values with a clean error.
+        for scratch_key, resolved_value in [
+            ("scratch.train_batch_size", resolved_train_batch_size),
+            ("scratch.gradient_accumulation_steps", resolved_gradient_accumulation_steps),
+        ]:
+            if resolved_value is None:
+                errors.append(
+                    f"{scratch_key} is missing: the base config does not define it and no "
+                    "override was given; it must be an integer >= 1"
+                )
+            elif resolved_value < 1:
+                errors.append(f"{scratch_key} must be an integer >= 1, got {resolved_value}")
+
         if resolved_train_batch_size is not None and resolved_gradient_accumulation_steps is not None:
             effective = resolved_train_batch_size * num_gpus * resolved_gradient_accumulation_steps
         resolved_paths = _resolve_training_inputs(
@@ -803,6 +827,25 @@ def inspect_training_config(
                 warnings.append(f"{label} COCO uses compatible category alias instead of exact book_spine: {summary.category_names}")
             if summary.missing_files:
                 errors.append(f"{label} COCO has missing image files, first examples: {summary.missing_files[:5]}")
+
+        # R-5: the train loader uses drop_last=True, so a train set smaller than the
+        # effective batch (micro_batch x accum x num_gpus) yields len(loader) == 0 and
+        # the trainer would "complete" an epoch with ZERO optimizer steps yet still
+        # save a checkpoint. Reject that outright; warn about partial-batch drops.
+        if effective is not None and train_coco is not None and train_coco.images:
+            if train_coco.images < effective:
+                errors.append(
+                    f"train image count ({train_coco.images}) is smaller than the effective "
+                    f"batch size ({effective} = train_batch_size x gradient_accumulation_steps "
+                    f"x num_gpus); with drop_last=True this trains for 0 optimizer steps and "
+                    "would produce a fake 'completed' run — refusing to prepare this run"
+                )
+            elif train_coco.images % effective != 0:
+                warnings.append(
+                    f"train image count ({train_coco.images}) is not divisible by the effective "
+                    f"batch size ({effective}); drop_last=True will drop "
+                    f"{train_coco.images % effective} image(s) every epoch"
+                )
 
         if prepare_runtime and run_dir.exists() and any(run_dir.iterdir()):
             errors.append(f"output directory already exists and is non-empty: {run_dir}")
