@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-07-03T05:41:15.560632+00:00",
+  "seed": 20260703,
+  "method": "Duplicate-aware split. The split starts from source/acquisition groups, then isolates the four byte-identical duplicate images at the tail of 20260623_233120 into test with their duplicate captures. This avoids exact duplicate leakage and keeps train image count divisible by effective batch size 4. No original images are copied; generated COCO file_name values are relative to data/dataset_raw.",
+  "split_rule": "val=20260622_231208; test=20260622_231750 + 20260623_183600 + 20260623_233120/img_0099..img_0102; train=remaining images",
+  "split_summary": {
+    "val": {
+      "image_count": 12,
+      "annotation_count": 253,
+      "groups": {
+        "20260622_231208": 12
+      },
+      "annotations_per_image_avg": 21.083333333333332,
+      "annotations_per_image_median": 20.5,
+      "empty_image_count": 0
+    },
+    "test": {
+      "image_count": 12,
+      "annotation_count": 183,
+      "groups": {
+        "20260622_231750": 4,
+        "20260623_183600": 4,
+        "20260623_233120": 4
+      },
+      "annotations_per_image_avg": 15.25,
+      "annotations_per_image_median": 14.5,
+      "empty_image_count": 0
+    },
+    "train": {
+      "image_count": 160,
+      "annotation_count": 6749,
+      "groups": {
+        "20260623_233120": 98,
+        "20260626_161819": 10,
+        "20260630_180628": 52
+      },
+      "annotations_per_image_avg": 42.18125,
+      "annotations_per_image_median": 45.0,
+      "empty_image_count": 0
+    }
+  },
+  "split_outputs": {
+    "train": {
+      "annotations": "data/formal_book_spine_sam3_dataset/train/annotations.json",
+      "annotations_sha256": "a45f97bf69cebaea82c8883b707e078e92dc3a85dabb3c4630803d970742d6e3",
+      "images_root": "data/dataset_raw",
+      "image_count": 160,
+      "annotation_count": 6749,
+      "groups": [
+        "20260623_233120",
+        "20260626_161819",
+        "20260630_180628"
+      ]
+    },
+    "val": {
+      "annotations": "data/formal_book_spine_sam3_dataset/val/annotations.json",
+      "annotations_sha256": "69b98ba21bf092f128b60049d991fa835fd9676e96d2c54ba9ba1fcd32b4f733",
+      "images_root": "data/dataset_raw",
+      "image_count": 12,
+      "annotation_count": 253,
+      "groups": [
+        "20260622_231208"
+      ]
+    },
+    "test": {
+      "annotations": "data/formal_book_spine_sam3_dataset/test/annotations.json",
+      "annotations_sha256": "2a9d4103ce2544ae228cab526dcfbe1d579715210ddd4bc24cf9d8da8da09283",
+      "images_root": "data/dataset_raw",
+      "image_count": 12,
+      "annotation_count": 183,
+      "groups": [
+        "20260622_231750",
+        "20260623_183600",
+        "20260623_233120"
+      ]
+    }
+  },
+  "leakage_check": {
+    "exact_duplicate_cross_split_groups": 0,
+    "average_hash_cross_split_near_duplicate_pairs_count": 0,
+    "train_image_count_divisible_by_effective_batch_4": true,
+    "note": "Average-hash near duplicates are a coarse signal; exact duplicate clusters do not cross split."
+  }
+}
