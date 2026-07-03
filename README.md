@@ -1,5 +1,7 @@
 # Book Spine SAM3 Workflow
 
+中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
+
 ## Local Web UI (Stage D1 / D1.1 / E1)
 
 A local Gradio UI wraps the existing CLI workflow (inference, history browsing, result
