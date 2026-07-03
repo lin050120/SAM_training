@@ -1190,9 +1190,12 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.assertEqual(state["distributed"]["master_port"], 42017)
         summary = json.loads((Path(state["run_dir"]) / "training_summary.json").read_text(encoding="utf-8"))
         provenance = json.loads((Path(state["run_dir"]) / "provenance.json").read_text(encoding="utf-8"))
+        config_summary = json.loads((Path(state["run_dir"]) / "training_config_summary.json").read_text(encoding="utf-8"))
         self.assertEqual(summary["distributed"]["master_port"], 42017)
         self.assertEqual(summary["training_provenance"]["distributed"]["master_port"], 42017)
         self.assertEqual(provenance["distributed"]["master_port"], 42017)
+        self.assertEqual(config_summary["distributed"]["master_port"], 42017)
+        self.assertEqual(config_summary["training_provenance"]["distributed"]["master_port"], 42017)
 
 
 class TrainingProcessManagerTest(unittest.TestCase):

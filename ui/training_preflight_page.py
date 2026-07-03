@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import threading
 import time
@@ -225,6 +226,21 @@ def _consume_preflight_for_launch(
     return []
 
 
+def _write_launcher_provenance(run_dir: Path, training_provenance: dict[str, Any]) -> None:
+    (run_dir / "provenance.json").write_text(
+        format_json(training_provenance) + "\n",
+        encoding="utf-8",
+    )
+    summary_path = run_dir / "training_config_summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        summary = {}
+    summary["training_provenance"] = training_provenance
+    summary["distributed"] = training_provenance.get("distributed")
+    summary_path.write_text(format_json(summary) + "\n", encoding="utf-8")
+
+
 def start_training(
     preflight_state: dict[str, Any] | None,
     confirmed: bool,
@@ -258,10 +274,7 @@ def start_training(
                 python_executable=guard.get("python"),
                 distributed=distributed,
             )
-            (run_dir / "provenance.json").write_text(
-                format_json(training_provenance) + "\n",
-                encoding="utf-8",
-            )
+            _write_launcher_provenance(run_dir, training_provenance)
         except Exception as exc:
             logger.exception("training_provenance_failed")
             yield f"ERROR: failed to collect training provenance: {exc!r}", "", "{}", "{}"
