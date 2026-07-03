@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import DEFAULT_CONDA_ENV, EXPECTED_SAM3_INIT, EXPECTED_SAM3_PACKAGE_DIR, EXPECTED_SAM3_ROOT
+from core.sam301_patch import collect_training_provenance
 from core.training_runner import run_sam3_import_guard, validate_training_run_path
 from ui.process_manager import ProcessManager, ProcessState
 from ui.ui_utils import logger
@@ -204,6 +205,11 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp_path, path)
+    fd = os.open(str(path.parent), os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _load_existing_summary(path: Path) -> dict[str, Any] | None:
@@ -223,6 +229,7 @@ def finalize_training_summary(
     state: ProcessState | None = None,
     import_metadata: dict[str, Any] | None = None,
     effective_pythonpath: str | None = None,
+    training_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write training_summary.json for a training run that has stopped (any status).
 
@@ -256,6 +263,16 @@ def finalize_training_summary(
         errors.append(f"training process exited with non-zero code: {state.returncode}")
     if status == "completed" and not discovered:
         warnings.append("training reported exit code 0 but no checkpoint files were found in checkpoints/")
+    provenance = training_provenance
+    if provenance is None:
+        try:
+            provenance = collect_training_provenance(
+                runtime_config_path=runtime_config_path,
+                sam3_import_path=import_metadata.get("sam3") if import_metadata else None,
+                python_executable=import_metadata.get("python") if import_metadata else None,
+            )
+        except Exception as exc:
+            provenance = {"patch_guard_ok": False, "patch_guard_error": repr(exc)}
 
     summary = {
         "run_id": run_dir.name,
@@ -273,6 +290,7 @@ def finalize_training_summary(
         "sam3_import_guard_ok": import_metadata.get("ok") if import_metadata else None,
         "sam3_import_guard_error": import_metadata.get("error") if import_metadata else None,
         "effective_pythonpath": effective_pythonpath,
+        "training_provenance": provenance,
         "initial_checkpoint": initial_checkpoint,
         "output_directory": str(run_dir),
         "discovered_checkpoint_files": discovered,
@@ -297,6 +315,7 @@ def make_training_summary_callback(
     initial_checkpoint: str | None,
     import_metadata: dict[str, Any] | None = None,
     effective_pythonpath: str | None = None,
+    training_provenance: dict[str, Any] | None = None,
 ):
     def _callback(log_text: str, state: ProcessState) -> None:
         finalize_training_summary(
@@ -308,6 +327,7 @@ def make_training_summary_callback(
             state=state,
             import_metadata=import_metadata,
             effective_pythonpath=effective_pythonpath,
+            training_provenance=training_provenance,
         )
 
     return _callback

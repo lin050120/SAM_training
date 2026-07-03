@@ -27,7 +27,7 @@ from core.config import (
     SAM301_ROOT,
 )
 
-from core.sam301_patch import verify_patched_for_training
+from core.sam301_patch import collect_training_provenance, verify_patched_for_training
 
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
 
@@ -112,6 +112,7 @@ class TrainingPreflight:
     val_coco: CocoSummary | None
     warnings: list[str]
     errors: list[str]
+    training_provenance: dict[str, Any] | None = None
 
 
 def _same_file_or_path(a: Path, b: Path) -> bool:
@@ -701,6 +702,7 @@ def inspect_training_config(
     prompt_source = None
     import_guard_result: dict[str, Any] | None = None
     hydra_validation_result: dict[str, Any] | None = None
+    training_provenance: dict[str, Any] | None = None
     effective_env = training_subprocess_env()
 
     if not exists:
@@ -891,6 +893,12 @@ def inspect_training_config(
                 )
                 if not hydra_validation_result.get("ok"):
                     errors.append(f"hydra config validation failed: {hydra_validation_result.get('error')}")
+            if not errors:
+                training_provenance = collect_training_provenance(
+                    runtime_config_path=runtime_config_path,
+                    sam3_import_path=import_guard_result.get("sam3") if import_guard_result else None,
+                    python_executable=import_guard_result.get("python") if import_guard_result else None,
+                )
 
     # train.py resolves -c as a Hydra config name inside pkg://sam3.train, so the
     # per-run runtime YAML (which must stay in the run directory) is launched via
@@ -945,6 +953,7 @@ def inspect_training_config(
             "resolved_learning_rate": resolved_learning_rate,
             "requested_num_workers": num_workers,
             "resolved_num_workers": resolved_num_workers,
+            "training_provenance": training_provenance,
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
         training_config_summary = {
@@ -972,9 +981,14 @@ def inspect_training_config(
             "output_directory": str(run_dir),
             "requested_training_prompt": training_prompt,
             "resolved_training_prompt": resolved_training_prompt,
+            "training_provenance": training_provenance,
         }
         (run_dir / "training_config_summary.json").write_text(
             json.dumps(training_config_summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "provenance.json").write_text(
+            json.dumps(training_provenance, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         (run_dir / "command.txt").write_text(" ".join(command) + "\n", encoding="utf-8")
@@ -1026,6 +1040,7 @@ def inspect_training_config(
         val_coco=val_coco,
         warnings=warnings,
         errors=errors,
+        training_provenance=training_provenance,
     )
 
 

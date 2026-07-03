@@ -67,7 +67,25 @@ def _verify_sam301_patch_or_die() -> None:
     manifest_path = Path(__file__).resolve().parent.parent / "config" / "sam301_patch_manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        target = Path(manifest["target_file"])
+        expected_root = Path(manifest["expected_sam3_root"]).expanduser().resolve(strict=False)
+        forbidden_root = Path("/home/book/sam3").expanduser().resolve(strict=False)
+        patch_root = (Path(__file__).resolve().parent.parent / "patches").resolve(strict=False)
+        target = Path(manifest["target_file"]).expanduser().resolve(strict=False)
+        patch_file = Path(manifest["patch_file"])
+        if not patch_file.is_absolute():
+            patch_file = manifest_path.parent.parent / patch_file
+        patch_file = patch_file.expanduser().resolve(strict=False)
+        target.relative_to(expected_root)
+        try:
+            target.relative_to(forbidden_root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(f"target points into forbidden old SAM3 root: {target}")
+        patch_file.relative_to(patch_root)
+        expected_patch = manifest.get("patch_file_sha256")
+        if expected_patch and hashlib.sha256(patch_file.read_bytes()).hexdigest() != expected_patch:
+            raise ValueError(f"patch file sha256 mismatch: {patch_file}")
         expected = manifest["patched_sha256"]
         actual = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception as exc:

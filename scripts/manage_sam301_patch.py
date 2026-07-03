@@ -22,11 +22,13 @@ Never touches /home/book/sam3 (manifest loader rejects such targets outright).
 from __future__ import annotations
 
 import argparse
+import os
+import fcntl
 import json
 import shutil
 import subprocess
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +70,47 @@ def _run_patch_tool(target: Path, patch_file: Path, reverse: bool, dry_run: bool
         command.append("--dry-run")
     command += [str(target), str(patch_file)]
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+
+
+def _fsync_parent(path: Path) -> None:
+    fd = os.open(str(path.parent), os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _copy_mode(src: Path, dst: Path) -> None:
+    stat = src.stat()
+    os.chmod(dst, stat.st_mode & 0o7777)
+
+
+def _apply_patch_atomically(target: Path, patch_file: Path, reverse: bool, expected_after: str) -> tuple[bool, str | None]:
+    """Patch a same-directory temp file, validate it, then atomically replace target."""
+    lock_path = target.with_name(f".{target.name}.patch.lock")
+    tmp_path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    with lock_path.open("w", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            shutil.copy2(target, tmp_path)
+            _copy_mode(target, tmp_path)
+            real = _run_patch_tool(tmp_path, patch_file, reverse=reverse, dry_run=False)
+            if real.returncode != 0:
+                return False, f"patch command failed: {real.stdout.strip()}"
+            actual_after = sha256_of_file(tmp_path) if tmp_path.is_file() else None
+            if actual_after != expected_after:
+                return False, f"post-patch hash {actual_after} != expected {expected_after}"
+            with tmp_path.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, target)
+            _fsync_parent(target)
+            return True, None
+        finally:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def cmd_status(args) -> int:
@@ -127,25 +170,10 @@ def _apply_or_revert(args, revert: bool) -> int:
         _emit({"ok": False, "action": action, "error": f"dry-run failed: {dry.stdout.strip()}"}, args.json)
         return 1
 
-    with tempfile.TemporaryDirectory() as tmp:
-        backup = Path(tmp) / target.name
-        shutil.copy2(target, backup)
-        real = _run_patch_tool(target, patch_file, reverse=revert, dry_run=False)
-        actual_after = sha256_of_file(target) if target.is_file() else None
-        if real.returncode != 0 or actual_after != expected_after:
-            shutil.copy2(backup, target)
-            _emit(
-                {
-                    "ok": False,
-                    "action": action,
-                    "error": (
-                        f"post-{action} hash {actual_after} != expected {expected_after}; "
-                        "target restored from backup"
-                    ),
-                },
-                args.json,
-            )
-            return 1
+    ok, error = _apply_patch_atomically(target, patch_file, reverse=revert, expected_after=expected_after)
+    if not ok:
+        _emit({"ok": False, "action": action, "error": error}, args.json)
+        return 1
 
     _emit(
         {"ok": True, "action": action, "state": patch_status(args.manifest).state, "sha256": expected_after},

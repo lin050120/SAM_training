@@ -21,8 +21,8 @@ self.scaler.scale(backward_loss).backward()
 |---|---|
 | `patch_id` / `version` | 补丁标识与版本 |
 | `purpose` | 补丁用途完整说明 |
-| `target_file` | 目标文件规范绝对路径（loader 拒绝任何指向 `/home/book/sam3` 的 target） |
-| `patch_file` | 补丁 diff（相对 book01 根），`patch_file_sha256` 校验其完整性 |
+| `target_file` | 目标文件规范绝对路径；loader 使用 `Path.resolve()` 后要求它位于 `expected_sam3_root` 内，并拒绝任何指向 `/home/book/sam3` 或通过 symlink 逃逸的 target |
+| `patch_file` | 补丁 diff（相对 book01 根）；解析后必须位于 `/home/book/book01/patches` 内，并由 `patch_file_sha256` 校验其完整性 |
 | `original_sha256` | 未修补 trainer.py 的**完整** SHA256（`9c9c4159…248d`，三方独立验证：修补前备份、`patch -R` 逆向重建、Codex 审查记录） |
 | `patched_sha256` | 修补后**完整** SHA256（`bcf5d8d6…9ec2`，Codex 独立复现） |
 | `expected_sam3_root` | 预期 SAM3 import 根 `/home/book/sam301` |
@@ -31,19 +31,22 @@ self.scaler.scale(backward_loss).backward()
 
 ```bash
 # 状态：PATCHED / UNPATCHED / UNKNOWN / MISSING
-conda run -n sam301 python scripts/manage_sam301_patch.py status          # 加 --json 得机器可读
+conda run -n sam301 python scripts/manage_sam301_patch.py status
+conda run -n sam301 python scripts/manage_sam301_patch.py --json status   # 机器可读
 
 # 验证（正式训练闸门）：只有 PATCHED 退出码为 0，其余一律非零
 conda run -n sam301 python scripts/manage_sam301_patch.py verify
 
-# 应用：仅当当前 hash == original 时允许；先 dry-run，应用后 hash 必须 == patched，否则自动回滚
+# 应用：仅当当前 hash == original 时允许；先 dry-run，在同目录临时文件上 patch，hash 必须 == patched 后原子替换
 conda run -n sam301 python scripts/manage_sam301_patch.py apply
 
-# 回滚：仅当当前 hash == patched 时允许；回滚后 hash 必须 == original
+# 回滚：仅当当前 hash == patched 时允许；在同目录临时文件上反向 patch，hash 必须 == original 后原子替换
 conda run -n sam301 python scripts/manage_sam301_patch.py revert
 ```
 
 **UNKNOWN 状态（hash 与两个已知值都不符）绝对禁止强制覆盖**——apply/revert 都会拒绝，此工具没有 --force。此时必须人工检查文件（可能有第三方修改需要保留），确认后手动恢复到已知状态再操作。
+
+apply/revert 持有目标文件同目录的锁文件，复制原文件到同目录临时文件，对临时文件执行 patch 或 reverse patch，校验最终 SHA256，保留原文件权限，fsync 临时文件，使用 `os.replace` 原子替换，并 fsync 父目录。任意可检测失败都不会替换真实 trainer。
 
 ## 4. 环境重建后的正确顺序
 
@@ -73,3 +76,12 @@ sha256sum /home/book/sam301/sam3/train/trainer.py
 | 3. 训练子进程 | `scripts/launch_sam3_training.py::run_training`（调用官方 main 之前，stdlib 自校验） | 最后防线，hash 不符直接退出非零 |
 
 三层与既有的 sam3 import guard（预检 + 启动时验证 import 解析到 `/home/book/sam301/sam3/__init__.py`、editable binding 未指回 `/home/book/sam3`）并行生效。
+
+每次可启动 preflight 和正式 launcher 都会记录机器可读 provenance：
+
+- `provenance.json`
+- `dataset_info.json` 的 `training_provenance`
+- `training_config_summary.json` 的 `training_provenance`
+- `training_summary.json` 的 `training_provenance`
+
+字段包括 book01 Git commit/dirty 状态、manifest SHA256、patch SHA256、trainer.py SHA256、SAM301 root、sam3 import path、Python executable 和 runtime YAML SHA256。launcher 启动前会重新计算这些值，不只复制 preflight 结果。

@@ -18,6 +18,7 @@ from core.config import (
     DEFAULT_TRAINING_RUN_ROOT,
 )
 from core.sam301_patch import verify_patched_for_training
+from core.sam301_patch import collect_training_provenance
 from core.training_runner import training_subprocess_env
 from ui.training_process_manager import (
     finalize_training_summary,
@@ -232,6 +233,20 @@ def start_training(
             ), "", format_json(guard), "{}"
             return
         try:
+            training_provenance = collect_training_provenance(
+                runtime_config_path=state.get("runtime_yaml"),
+                sam3_import_path=guard.get("sam3"),
+                python_executable=guard.get("python"),
+            )
+            (run_dir / "provenance.json").write_text(
+                format_json(training_provenance) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.exception("training_provenance_failed")
+            yield f"ERROR: failed to collect training provenance: {exc!r}", "", "{}", "{}"
+            return
+        try:
             training_process_manager.start(
                 command,
                 cwd=BOOK_ROOT,
@@ -243,6 +258,7 @@ def start_training(
                     state.get("checkpoint"),
                     import_metadata=guard,
                     effective_pythonpath=env.get("PYTHONPATH"),
+                    training_provenance=training_provenance,
                 ),
             )
         except Exception as exc:
@@ -263,6 +279,7 @@ def start_training(
         state.get("checkpoint"),
         import_metadata=guard,
         effective_pythonpath=env.get("PYTHONPATH"),
+        training_provenance=training_provenance,
     )
     yield f"status={snap['status']} pid={snap['pid']}", snap["log"], format_json(snap), format_json(summary)
 
