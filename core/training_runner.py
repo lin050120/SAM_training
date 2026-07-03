@@ -28,6 +28,11 @@ from core.config import (
     SAM301_ROOT,
 )
 
+from core.dataset_identity import (
+    TRAINING_MODE_SMOKE,
+    resolve_dataset_identity,
+    validate_training_mode_against_identity,
+)
 from core.sam301_patch import collect_training_provenance, verify_patched_for_training
 
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
@@ -115,6 +120,7 @@ class TrainingPreflight:
     warnings: list[str]
     errors: list[str]
     training_provenance: dict[str, Any] | None = None
+    dataset_identity: dict[str, Any] | None = None
 
 
 def _same_file_or_path(a: Path, b: Path) -> bool:
@@ -691,6 +697,7 @@ def inspect_training_config(
     allow_external_output: bool = False,
     prepare_runtime: bool = True,
     collect_import_metadata: bool = False,
+    training_mode: str = TRAINING_MODE_SMOKE,
 ) -> TrainingPreflight:
     warnings: list[str] = []
     errors: list[str] = []
@@ -753,6 +760,7 @@ def inspect_training_config(
     prompt_source = None
     import_guard_result: dict[str, Any] | None = None
     hydra_validation_result: dict[str, Any] | None = None
+    dataset_identity: dict[str, Any] | None = None
     training_provenance: dict[str, Any] | None = None
     distributed_metadata: dict[str, Any] | None = None
     effective_env = training_subprocess_env()
@@ -903,6 +911,25 @@ def inspect_training_config(
                     f"{train_coco.images % effective} image(s) every epoch"
                 )
 
+        # Dataset identity guard: the current formal_book_spine_sam3_dataset split is
+        # SAM3's own machine pre-annotation (see data_manifests/dataset_identity_registry.json
+        # and docs/E3_DATASET_IDENTITY_ERRATUM.md) — not human-reviewed GT. Look it up by
+        # resolved annotation path (never by filename), and refuse formal-mode or
+        # multi-epoch runs against a non-reviewed dataset. Unmatched datasets are treated
+        # as NOT reviewed (fail-safe default), not silently trusted.
+        dataset_identity_obj = resolve_dataset_identity(
+            resolved_paths.get("train_annotations"), resolved_paths.get("val_annotations")
+        )
+        dataset_identity = dataset_identity_obj.to_dict()
+        if dataset_identity_obj.warning:
+            warnings.append(f"dataset identity: {dataset_identity_obj.warning}")
+        errors.extend(
+            f"dataset identity guard: {reason}"
+            for reason in validate_training_mode_against_identity(
+                training_mode, resolved_max_epochs, dataset_identity_obj
+            )
+        )
+
         # SAM301 patch guard (preflight side): a launchable run (runtime YAML +
         # token) must never be prepared while the trainer is not exactly the
         # expected patched hash — fail closed before anything is written.
@@ -1014,6 +1041,8 @@ def inspect_training_config(
             "resolved_num_workers": resolved_num_workers,
             "training_provenance": training_provenance,
             "distributed": distributed_metadata,
+            "dataset_identity": dataset_identity,
+            "training_mode": training_mode,
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
         training_config_summary = {
@@ -1043,6 +1072,8 @@ def inspect_training_config(
             "resolved_training_prompt": resolved_training_prompt,
             "training_provenance": training_provenance,
             "distributed": distributed_metadata,
+            "dataset_identity": dataset_identity,
+            "training_mode": training_mode,
         }
         (run_dir / "training_config_summary.json").write_text(
             json.dumps(training_config_summary, ensure_ascii=False, indent=2) + "\n",
@@ -1102,6 +1133,7 @@ def inspect_training_config(
         warnings=warnings,
         errors=errors,
         training_provenance=training_provenance,
+        dataset_identity=dataset_identity,
     )
 
 

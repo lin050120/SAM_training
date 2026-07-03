@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-03T00:00:00+00:00",
+  "generated_by_review": "docs/FABLE5_FULL_INDEPENDENT_PROJECT_AUDIT.md (finding F-P1-1)",
+  "generated_at_book01_commit": "36704e13057d381da80e1488958f1be23abec286",
+  "note": "This registry does NOT replace formal_dataset_manifest.json or formal_split_manifest.json and does not modify their content or hashes. It records the true annotation-source identity of the dataset those manifests describe, independently re-derived from the raw COCO files and split outputs on disk.",
+  "datasets": [
+    {
+      "dataset_id": "formal_book_spine_sam3_dataset_2026_07_03_smoke",
+      "annotation_source": "sam3_machine_preannotation",
+      "annotation_source_evidence": "All 6 source COCO files (data/cvat_import_polygon_*_book_spine_iou0.5_book_spine.json) carry info.description == 'book_spine SAM3 pre-annotation (polygon ~8pts, NMS)'. 100% of 7185 annotation polygons have <=8 vertices, consistent with an unedited machine export and inconsistent with manual CVAT correction.",
+      "human_reviewed": false,
+      "independently_corrected_gt": false,
+      "intended_use": "pipeline_smoke_test",
+      "allowed_for_formal_training": false,
+      "allowed_for_model_evaluation": false,
+      "max_epochs_without_human_review": 1,
+      "dataset_manifest_path": "data_manifests/formal_dataset_manifest.json",
+      "dataset_manifest_sha256": "1e56e47f64a9b08c774e8d2e5765815d8b008a0a2f6189939b85fcf7bd47899a",
+      "split_manifest_path": "data_manifests/formal_split_manifest.json",
+      "split_manifest_sha256": "4bb39f138fd4d936ee12fe24b636b002a97793a76232fe6d6dabf72185beb7e0",
+      "source_coco_file_count": 6,
+      "image_file_count": 184,
+      "unique_image_count": 136,
+      "annotation_count": 7185,
+      "exact_duplicate_group_count": 44,
+      "splits": {
+        "train": {
+          "annotations_path": "data/formal_book_spine_sam3_dataset/train/annotations.json",
+          "file_count": 160,
+          "unique_image_count": 120,
+          "annotation_count": 6749
+        },
+        "val": {
+          "annotations_path": "data/formal_book_spine_sam3_dataset/val/annotations.json",
+          "file_count": 12,
+          "unique_image_count": 12,
+          "annotation_count": 253
+        },
+        "test": {
+          "annotations_path": "data/formal_book_spine_sam3_dataset/test/annotations.json",
+          "file_count": 12,
+          "unique_image_count": 4,
+          "annotation_count": 183
+        }
+      },
+      "basis_and_review_reports": [
+        "docs/FABLE5_FULL_INDEPENDENT_PROJECT_AUDIT.md",
+        "docs/FABLE5_AUDIT_ACTION_PLAN.md",
+        "docs/E3_DATASET_IDENTITY_ERRATUM.md"
+      ],
+      "how_to_promote_to_formal": "Re-export human-corrected polygons from CVAT for these images (or a superseding manual annotation batch), regenerate data_manifests/formal_dataset_manifest.json and formal_split_manifest.json from the corrected COCO files, add a NEW entry to this registry with a new dataset_id, human_reviewed=true, independently_corrected_gt=true, and allowed_for_formal_training=true only after independent verification of the correction."
+    }
+  ]
+}

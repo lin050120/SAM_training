@@ -39,6 +39,33 @@ conda run -n sam301 python scripts/manage_sam301_patch.py verify   # must exit 0
 
 `status` / `apply` / `revert` are also available; see `docs/SAM301_PATCH_MANAGEMENT.md`.
 
+## Dataset Identity (SAM3 Pre-Annotation, Not Human-Reviewed GT)
+
+The current `data/formal_book_spine_sam3_dataset` split (184 images / 7185 annotations)
+is **SAM3's own machine pre-annotation output**, not human-corrected ground truth —
+every source COCO's `info.description` says so, and 100% of its polygons have <=8
+vertices, consistent with an unedited export. It is registered in
+`data_manifests/dataset_identity_registry.json` with `human_reviewed=false` and
+`allowed_for_formal_training=false`. Preflight looks this up by resolved annotation
+path (never by filename) and blocks `--training-mode formal` and any `max_epochs>1`
+smoke run against it. See `docs/E3_DATASET_IDENTITY_ERRATUM.md` for the full
+remediation and how to promote a dataset to formal status once it has been
+independently human-reviewed.
+
+## Checkpoint Export (Trainer Checkpoint -> Inference Checkpoint)
+
+A trainer checkpoint (`checkpoints/checkpoint.pt`) cannot be passed directly to the
+inference entry point — `Sam3Adapter` now identifies checkpoint type by real
+structure and rejects trainer checkpoints outright with an export hint, because
+`sam301/model_builder.py`'s loader silently loads zero weights from one (see
+`docs/CHECKPOINT_EXPORT_AND_INFERENCE.md`). Export first:
+
+```bash
+conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py \
+  --input <run_dir>/checkpoints/checkpoint.pt \
+  --output <run_dir>/checkpoints/inference_model.pt
+```
+
 ## Authoritative SAM3 Training Config
 
 The default book-spine fine-tuning config for this workspace is:

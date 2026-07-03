@@ -85,6 +85,7 @@ def run_training_preflight(
     learning_rate: str,
     num_workers: str,
     num_gpus: str,
+    training_mode: str = "smoke",
 ) -> tuple[str, dict[str, Any], str]:
     """Stage A click handler. Returns (result_json, preflight_state, status_text)."""
     parse_errors: list[str] = []
@@ -135,6 +136,7 @@ def run_training_preflight(
             output_root=Path(output_root).expanduser() if output_root else DEFAULT_TRAINING_RUN_ROOT,
             prepare_runtime=True,
             collect_import_metadata=True,
+            training_mode=training_mode,
         )
     except Exception as exc:
         logger.exception("training_preflight_failed")
@@ -147,6 +149,17 @@ def run_training_preflight(
     result_text = format_preflight(preflight)
     if preflight.errors:
         return result_text, _empty_preflight_state(), f"预检未通过，发现 {len(preflight.errors)} 个 error，不能启动训练。"
+
+    identity = preflight.dataset_identity or {}
+    if not identity.get("human_reviewed"):
+        result_text = (
+            "‼️ 数据身份警告 / DATASET IDENTITY WARNING ‼️\n"
+            f"annotation_source={identity.get('annotation_source')!r}, "
+            f"human_reviewed={identity.get('human_reviewed')}, "
+            f"allowed_for_formal_training={identity.get('allowed_for_formal_training')}\n"
+            "本次训练使用的是 SAM3 机器预标注数据，未经人工审核，仅可用于训练流程 smoke test，"
+            "不构成正式模型效果证据。详见 docs/E3_DATASET_IDENTITY_ERRATUM.md。\n\n"
+        ) + result_text
 
     state = {
         "ok": True,
@@ -166,10 +179,14 @@ def run_training_preflight(
         "sam3_import_guard_ok": preflight.sam3_import_guard_ok,
         "effective_pythonpath": preflight.effective_pythonpath,
         "distributed": (preflight.training_provenance or {}).get("distributed"),
+        "dataset_identity": identity,
         "launch_token": uuid.uuid4().hex,
         "consumed": False,
     }
-    return result_text, state, "预检通过，可以启动训练。"
+    status_text = "预检通过，可以启动训练。"
+    if not identity.get("human_reviewed"):
+        status_text += " [SMOKE — 数据未经人工审核，非正式训练结果]"
+    return result_text, state, status_text
 
 
 def _consume_preflight_for_launch(
@@ -329,6 +346,11 @@ def stop_training() -> str:
 def build_training_tab() -> None:
     gr.Markdown(BANNER)
     gr.Markdown(STAGE_A_NOTE)
+    gr.Markdown(
+        "**数据身份**：当前默认书脊数据集（含 `formal_book_spine_sam3_dataset`）是 SAM3 "
+        "机器预标注，**未经人工审核**，仅用于训练流程 smoke test，不构成正式微调效果证据。"
+        "详见 `docs/E3_DATASET_IDENTITY_ERRATUM.md`。"
+    )
 
     preflight_state = gr.State(_empty_preflight_state())
 
@@ -353,6 +375,11 @@ def build_training_tab() -> None:
         learning_rate = gr.Textbox(label="learning rate (留空=基础YAML)", value="")
         num_workers = gr.Textbox(label="num_workers (留空=基础YAML, 只作用于训练集)", value="")
         num_gpus = gr.Textbox(label="num_gpus", value="1")
+    training_mode = gr.Radio(
+        label="training mode",
+        choices=[("smoke (max_epochs<=1, 未审核数据默认)", "smoke"), ("formal (需要人工审核 GT)", "formal")],
+        value="smoke",
+    )
 
     preflight_btn = gr.Button("运行训练预检 (不会启动训练)", variant="primary")
     preflight_status = gr.Textbox(label="预检状态", interactive=False, value="尚未运行预检。")
@@ -365,7 +392,7 @@ def build_training_tab() -> None:
     preflight_inputs = [
         config_path, train_images, train_annotations, val_images, val_annotations, checkpoint,
         training_prompt, output_root, max_epochs, train_batch_size, gradient_accumulation_steps,
-        learning_rate, num_workers, num_gpus,
+        learning_rate, num_workers, num_gpus, training_mode,
     ]
     preflight_btn.click(
         fn=run_training_preflight,

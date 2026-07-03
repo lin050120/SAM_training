@@ -56,8 +56,14 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         # effective batch must stay <= the real 8-image train set: the R-5 preflight
         # guard now (correctly) rejects effective batches larger than the dataset,
         # and that rejection has its own dedicated test in PreflightGuardsTest.
+        # max_epochs=1: the default dataset here is not registered in
+        # data_manifests/dataset_identity_registry.json, so the dataset-identity
+        # guard's fail-safe default (unmatched == not human-reviewed) caps smoke runs
+        # to a single epoch; that cap has its own dedicated tests in
+        # DatasetIdentityGuardTest. This test's purpose is the override-writing
+        # round trip, which max_epochs=1 exercises just as well as any other value.
         preflight = inspect_training_config(
-            max_epochs=3,
+            max_epochs=1,
             train_batch_size=2,
             gradient_accumulation_steps=4,
             learning_rate=0.0001,
@@ -67,7 +73,7 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
             prepare_runtime=True,
         )
         self.assertEqual(preflight.errors, [])
-        self.assertEqual(preflight.max_epochs, 3)
+        self.assertEqual(preflight.max_epochs, 1)
         self.assertEqual(preflight.train_batch_size, 2)
         self.assertEqual(preflight.gradient_accumulation_steps, 4)
         self.assertEqual(preflight.learning_rate, 0.0001)
@@ -75,7 +81,7 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         self.assertEqual(preflight.effective_batch_size, 2 * 1 * 4)
 
         cfg = OmegaConf.load(preflight.runtime_config_path)
-        self.assertEqual(OmegaConf.select(cfg, "trainer.max_epochs"), 3)
+        self.assertEqual(OmegaConf.select(cfg, "trainer.max_epochs"), 1)
         self.assertEqual(OmegaConf.select(cfg, "scratch.train_batch_size"), 2)
         self.assertEqual(OmegaConf.select(cfg, "scratch.gradient_accumulation_steps"), 4)
         self.assertEqual(OmegaConf.select(cfg, "scratch.num_train_workers"), 4)
@@ -86,13 +92,32 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         self.assertEqual(OmegaConf.select(cfg, "scratch.lr_language_backbone"), 0.0)
 
     def test_no_overrides_fall_back_to_base_yaml(self) -> None:
+        from core import training_runner
+        from core.dataset_identity import DatasetIdentity
         from core.training_runner import inspect_training_config
 
-        preflight = inspect_training_config(
-            training_prompt="book spine",
-            output_root=self.output_root,
-            prepare_runtime=True,
+        # This test's purpose is proving base-YAML fallback (including max_epochs=20)
+        # when no override is given at all — orthogonal to the dataset-identity
+        # guard's own policy, which has its own dedicated DatasetIdentityGuardTest.
+        # Stand in an "allowed for formal training" identity so the base YAML's
+        # max_epochs=20 isn't capped by the fail-safe smoke default.
+        allowed_identity = DatasetIdentity(
+            dataset_id="test-fixture-allowed",
+            matched=True,
+            annotation_source="test_fixture",
+            human_reviewed=True,
+            independently_corrected_gt=True,
+            allowed_for_formal_training=True,
+            allowed_for_model_evaluation=True,
+            max_epochs_without_human_review=1,
+            warning=None,
         )
+        with mock.patch.object(training_runner, "resolve_dataset_identity", return_value=allowed_identity):
+            preflight = inspect_training_config(
+                training_prompt="book spine",
+                output_root=self.output_root,
+                prepare_runtime=True,
+            )
         self.assertEqual(preflight.errors, [])
         self.assertEqual(preflight.requested_max_epochs, None)
         self.assertEqual(preflight.requested_train_batch_size, None)
@@ -309,6 +334,7 @@ class Sam301EnvironmentMigrationTest(unittest.TestCase):
             with mock.patch.object(training_runner, "run_sam3_import_guard", return_value=fake_guard):
                 preflight = training_runner.inspect_training_config(
                     training_prompt="book spine",
+                    max_epochs=1,
                     output_root=output_root,
                     prepare_runtime=True,
                     collect_import_metadata=True,
@@ -500,6 +526,7 @@ class HydraLaunchRegressionTest(unittest.TestCase):
                 ):
                     preflight = training_runner.inspect_training_config(
                         training_prompt="book spine",
+                        max_epochs=1,
                         output_root=Path(tmp),
                         prepare_runtime=True,
                         collect_import_metadata=True,
@@ -690,7 +717,11 @@ class TrainingPageStageATest(unittest.TestCase):
             checkpoint=str(DEFAULT_SAM3_CHECKPOINT),
             training_prompt="book spine",
             output_root=str(self.output_root),
-            max_epochs="", train_batch_size="", gradient_accumulation_steps="",
+            # max_epochs="1": this fixture dataset is not registered in
+            # data_manifests/dataset_identity_registry.json, so the dataset-identity
+            # guard's fail-safe default (unmatched == not human-reviewed) caps smoke
+            # runs to a single epoch. None of these tests are about epoch count.
+            max_epochs="1", train_batch_size="", gradient_accumulation_steps="",
             learning_rate="", num_workers="", num_gpus="1",
         )
         kwargs.update(overrides)
@@ -1624,6 +1655,7 @@ class TrainingOutputConfinementTest(unittest.TestCase):
 
         return inspect_training_config(
             training_prompt="book spine",
+            max_epochs=1,
             output_root=output_root,
             prepare_runtime=prepare_runtime,
         )
@@ -1827,6 +1859,7 @@ class UnicodeAndSpacePathTest(unittest.TestCase):
         try:
             preflight = inspect_training_config(
                 training_prompt="book spine",
+                max_epochs=1,
                 output_root=output_root,
                 prepare_runtime=True,
             )

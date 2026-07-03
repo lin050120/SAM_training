@@ -556,6 +556,7 @@ class TrainingPreflightCallTest(unittest.TestCase):
         try:
             preflight = inspect_training_config(
                 training_prompt="book spine",
+                max_epochs=1,
                 output_root=output_root,
                 prepare_runtime=True,
             )
