@@ -129,6 +129,8 @@ conda run -n sam301 python \
 
 Runtime YAML 把 `trainer.checkpoint.save_dir` 指向 `<run_dir>/checkpoints`，训练器只会往这个全新目录写 checkpoint，从不写回 `initial_checkpoint` 指向的原始文件（`/home/book/sam301/sam3.pt` 默认情况下只被读取，从未被训练流程打开写入）。`training_summary.json` 里的 `discovered_checkpoint_files` 只列出 `<run_dir>/checkpoints/` 下**真实存在**的文件，不会假设训练"应该"产生了什么文件。
 
+`<run_dir>/checkpoints/checkpoint.pt` 是**训练/resume checkpoint**（含 optimizer/scheduler/epoch/scaler 等完整状态），**不能**直接用于推理——必须先导出：`conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py --input <run_dir>/checkpoints/checkpoint.pt --output <run_dir>/checkpoints/inference_model.pt`。详见 `docs/CHECKPOINT_EXPORT_AND_INFERENCE.md`。
+
 ## 8. cancelled / failed / completed 状态
 
 状态判定逻辑（`ui/training_process_manager.py::training_status_label()`）：

@@ -9,6 +9,13 @@ import numpy as np
 import torch
 from PIL import Image
 
+from core.checkpoint_export import (
+    CHECKPOINT_TYPE_BASE,
+    CHECKPOINT_TYPE_INFERENCE,
+    CHECKPOINT_TYPE_TRAINER,
+    identify_checkpoint,
+    load_inference_checkpoint,
+)
 from core.config import DEFAULT_SAM3_CHECKPOINT, SAM301_ROOT
 from core.mask_nms import mask_bbox_xywh
 from core.npz_io import InstanceSet
@@ -38,11 +45,30 @@ class Sam3Adapter:
         if device not in {"cuda", "cpu"}:
             raise ValueError(f"Unsupported device: {device}")
         self.device = device
-        try:
-            self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint), device=self.device)
-        except TypeError:
-            self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint))
-            self.model = self.model.to(self.device)
+        identity = identify_checkpoint(self.checkpoint)
+        if identity.type == CHECKPOINT_TYPE_TRAINER:
+            raise ValueError(
+                f"{self.checkpoint} is a TRAINER checkpoint (contains optimizer/scheduler "
+                "state), not something the inference entry point can load directly. Export "
+                "it first: conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py "
+                f"--input {self.checkpoint} --output <inference_model.pt>"
+            )
+        if identity.type == CHECKPOINT_TYPE_INFERENCE:
+            self.model, self.checkpoint_metadata = load_inference_checkpoint(
+                self.checkpoint, device=self.device, sam301_root=self.sam3_root
+            )
+        elif identity.type == CHECKPOINT_TYPE_BASE:
+            self.checkpoint_metadata = None
+            try:
+                self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint), device=self.device)
+            except TypeError:
+                self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint))
+                self.model = self.model.to(self.device)
+        else:
+            raise ValueError(
+                f"{self.checkpoint}: unrecognized checkpoint type ({identity.type!r}, "
+                f"error={identity.error!r}); refusing to guess how to load it"
+            )
         self.model.eval()
         self.processor = Sam3Processor(self.model)
         self.processor.set_confidence_threshold(confidence_threshold)
