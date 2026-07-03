@@ -230,6 +230,7 @@ def finalize_training_summary(
     import_metadata: dict[str, Any] | None = None,
     effective_pythonpath: str | None = None,
     training_provenance: dict[str, Any] | None = None,
+    distributed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write training_summary.json for a training run that has stopped (any status).
 
@@ -270,6 +271,7 @@ def finalize_training_summary(
                 runtime_config_path=runtime_config_path,
                 sam3_import_path=import_metadata.get("sam3") if import_metadata else None,
                 python_executable=import_metadata.get("python") if import_metadata else None,
+                distributed=distributed,
             )
         except Exception as exc:
             provenance = {"patch_guard_ok": False, "patch_guard_error": repr(exc)}
@@ -291,6 +293,7 @@ def finalize_training_summary(
         "sam3_import_guard_error": import_metadata.get("error") if import_metadata else None,
         "effective_pythonpath": effective_pythonpath,
         "training_provenance": provenance,
+        "distributed": distributed or (provenance.get("distributed") if isinstance(provenance, dict) else None),
         "initial_checkpoint": initial_checkpoint,
         "output_directory": str(run_dir),
         "discovered_checkpoint_files": discovered,
@@ -316,6 +319,7 @@ def make_training_summary_callback(
     import_metadata: dict[str, Any] | None = None,
     effective_pythonpath: str | None = None,
     training_provenance: dict[str, Any] | None = None,
+    distributed: dict[str, Any] | None = None,
 ):
     def _callback(log_text: str, state: ProcessState) -> None:
         finalize_training_summary(
@@ -328,6 +332,7 @@ def make_training_summary_callback(
             import_metadata=import_metadata,
             effective_pythonpath=effective_pythonpath,
             training_provenance=training_provenance,
+            distributed=distributed,
         )
 
     return _callback

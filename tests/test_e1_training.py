@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -432,6 +433,53 @@ class HydraLaunchRegressionTest(unittest.TestCase):
                 timeout=120,
             )
             self.assertNotEqual(failed.returncode, 0)
+
+    @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
+    def test_preflight_writes_per_run_distributed_port_range(self) -> None:
+        from core import training_runner
+        from omegaconf import OmegaConf
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            with mock.patch.object(training_runner, "allocate_distributed_port", side_effect=[41001, 41002]):
+                first = training_runner.inspect_training_config(
+                    training_prompt="book spine",
+                    max_epochs=1,
+                    train_batch_size=1,
+                    gradient_accumulation_steps=4,
+                    output_root=Path(tmp),
+                    prepare_runtime=True,
+                    collect_import_metadata=False,
+                )
+                second = training_runner.inspect_training_config(
+                    training_prompt="book spine",
+                    max_epochs=1,
+                    train_batch_size=1,
+                    gradient_accumulation_steps=4,
+                    output_root=Path(tmp),
+                    prepare_runtime=True,
+                    collect_import_metadata=False,
+                )
+            first_cfg = OmegaConf.load(first.runtime_config_path)
+            second_cfg = OmegaConf.load(second.runtime_config_path)
+            self.assertEqual(OmegaConf.select(first_cfg, "submitit.port_range"), [41001, 41001])
+            self.assertEqual(OmegaConf.select(second_cfg, "submitit.port_range"), [41002, 41002])
+            self.assertNotEqual(
+                first.training_provenance["distributed"]["master_port"],
+                second.training_provenance["distributed"]["master_port"],
+            )
+            self.assertNotEqual(first.training_provenance["distributed"]["master_port"], 34508)
+
+    def test_port_allocator_skips_listening_port(self) -> None:
+        from core.training_runner import allocate_distributed_port, is_tcp_port_available
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+            occupied = sock.getsockname()[1]
+            self.assertFalse(is_tcp_port_available(occupied))
+            allocated = allocate_distributed_port()
+            self.assertNotEqual(allocated, occupied)
+            self.assertTrue(is_tcp_port_available(allocated))
 
     @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
     def test_hydra_validation_failure_blocks_preflight(self) -> None:
@@ -894,6 +942,9 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.original_sleep = tpp.time.sleep
         self.original_validate_training_run_path = tpm.validate_training_run_path
         self.original_verify_sam3_import_for_training = tpp.verify_sam3_import_for_training
+        self.original_allocate_distributed_port = tpp.allocate_distributed_port
+        self.original_configure_runtime_distributed_port = tpp.configure_runtime_distributed_port
+        self._next_port = 43000
         tpp.training_process_manager = self.manager
         tpm.training_process_manager = self.manager
         tpm.validate_training_run_path = lambda _path: None
@@ -904,6 +955,20 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
             "conda_environment": DEFAULT_CONDA_ENV,
             "effective_pythonpath": env.get("PYTHONPATH") if env else None,
         }
+        def fake_allocate(_master_addr="localhost"):
+            self._next_port += 1
+            return self._next_port
+
+        def fake_configure(runtime_config, master_port, master_addr="localhost"):
+            return {
+                "master_addr": master_addr,
+                "master_port": int(master_port),
+                "port_range": [int(master_port), int(master_port)],
+                "runtime_config": str(runtime_config),
+            }
+
+        tpp.allocate_distributed_port = fake_allocate
+        tpp.configure_runtime_distributed_port = fake_configure
         tpp.detect_cuda = lambda: SimpleNamespace(available=True, device_count=1)
         tpp.time.sleep = lambda _seconds: None
         tpp._consumed_preflight_tokens.clear()
@@ -919,6 +984,8 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.tpp.time.sleep = self.original_sleep
         self.tpm.validate_training_run_path = self.original_validate_training_run_path
         self.tpp.verify_sam3_import_for_training = self.original_verify_sam3_import_for_training
+        self.tpp.allocate_distributed_port = self.original_allocate_distributed_port
+        self.tpp.configure_runtime_distributed_port = self.original_configure_runtime_distributed_port
         self.tpp._consumed_preflight_tokens.clear()
         self.tmp.cleanup()
 
@@ -1092,6 +1159,40 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.assertEqual(summary["resolved_sam3_import_path"], str(EXPECTED_SAM3_INIT))
         self.assertTrue(summary["sam3_import_guard_ok"])
         self.assertTrue(summary["effective_pythonpath"].startswith("/home/book/sam301"))
+
+    def test_distributed_port_failure_blocks_without_consuming_or_spawning(self) -> None:
+        state = self._state("port_failure")
+        self.tpp.allocate_distributed_port = mock.Mock(side_effect=RuntimeError("no bindable port"))
+        with mock.patch.object(self.manager, "start", wraps=self.manager.start) as start_mock:
+            result = self._run_to_end(state)
+        self.assertIn("BLOCKED", result[0][0])
+        self.assertIn("distributed port allocation failed", result[0][0])
+        self.assertFalse(state["consumed"])
+        self.assertNotIn(state["launch_token"], self.tpp._consumed_preflight_tokens)
+        start_mock.assert_not_called()
+
+    def test_normal_start_passes_distributed_port_to_child_env_and_summary(self) -> None:
+        state = self._state("port_env")
+        self.tpp.allocate_distributed_port = mock.Mock(return_value=42017)
+        captured_env: dict[str, str] = {}
+        original_start = self.manager.start
+
+        def start_spy(command, cwd=None, env=None, on_finish=None):
+            captured_env.update(env or {})
+            return original_start(command, cwd=cwd, env=env, on_finish=on_finish)
+
+        with mock.patch.object(self.manager, "start", side_effect=start_spy) as start_mock:
+            result = self._run_to_end(state)
+        self.assertIn("status=completed", result[-1][0])
+        start_mock.assert_called_once()
+        self.assertEqual(captured_env["MASTER_ADDR"], "localhost")
+        self.assertEqual(captured_env["MASTER_PORT"], "42017")
+        self.assertEqual(state["distributed"]["master_port"], 42017)
+        summary = json.loads((Path(state["run_dir"]) / "training_summary.json").read_text(encoding="utf-8"))
+        provenance = json.loads((Path(state["run_dir"]) / "provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["distributed"]["master_port"], 42017)
+        self.assertEqual(summary["training_provenance"]["distributed"]["master_port"], 42017)
+        self.assertEqual(provenance["distributed"]["master_port"], 42017)
 
 
 class TrainingProcessManagerTest(unittest.TestCase):

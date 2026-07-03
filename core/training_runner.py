@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import socket
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -30,6 +31,7 @@ from core.config import (
 from core.sam301_patch import collect_training_provenance, verify_patched_for_training
 
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
+DEFAULT_DISTRIBUTED_MASTER_ADDR = "localhost"
 
 
 @dataclass(frozen=True)
@@ -206,6 +208,55 @@ def validate_training_output_root(path: Path, allow_external_output: bool = Fals
     if not _inside_training_output_root(resolved):
         return f"{TRAINING_OUTPUT_ROOT_ERROR} {DEFAULT_TRAINING_RUN_ROOT}"
     return None
+
+
+def _bind_host_for_addr(master_addr: str) -> str:
+    return "127.0.0.1" if master_addr in {"localhost", "127.0.0.1"} else master_addr
+
+
+def is_tcp_port_available(port: int, master_addr: str = DEFAULT_DISTRIBUTED_MASTER_ADDR) -> bool:
+    if not isinstance(port, int) or port < 1 or port > 65535:
+        return False
+    host = _bind_host_for_addr(master_addr)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def allocate_distributed_port(master_addr: str = DEFAULT_DISTRIBUTED_MASTER_ADDR) -> int:
+    """Return a currently bindable TCP port for SAM3's local TCPStore.
+
+    The socket is closed before Popen because SAM3 itself must bind it. The launcher
+    calls this under the training-start lock immediately before spawning to keep the
+    unavoidable check/use window as small as possible.
+    """
+    host = _bind_host_for_addr(master_addr)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
+def configure_runtime_distributed_port(
+    runtime_config: Path,
+    master_port: int,
+    master_addr: str = DEFAULT_DISTRIBUTED_MASTER_ADDR,
+) -> dict[str, Any]:
+    if not is_tcp_port_available(master_port, master_addr=master_addr):
+        raise RuntimeError(f"distributed port is not bindable before launch: {master_addr}:{master_port}")
+    cfg = OmegaConf.load(runtime_config)
+    OmegaConf.update(cfg, "submitit.port_range", [int(master_port), int(master_port)], merge=False)
+    OmegaConf.save(cfg, runtime_config)
+    return {
+        "master_addr": master_addr,
+        "master_port": int(master_port),
+        "port_range": [int(master_port), int(master_port)],
+        "runtime_config": str(runtime_config),
+    }
 
 
 def validate_training_run_path(path: Path, allow_external_output: bool = False) -> str | None:
@@ -703,6 +754,7 @@ def inspect_training_config(
     import_guard_result: dict[str, Any] | None = None
     hydra_validation_result: dict[str, Any] | None = None
     training_provenance: dict[str, Any] | None = None
+    distributed_metadata: dict[str, Any] | None = None
     effective_env = training_subprocess_env()
 
     if not exists:
@@ -883,6 +935,12 @@ def inspect_training_config(
                 learning_rate=validated_learning_rate,
                 num_workers=validated_num_workers,
             )
+            distributed_port = allocate_distributed_port(DEFAULT_DISTRIBUTED_MASTER_ADDR)
+            distributed_metadata = configure_runtime_distributed_port(
+                runtime_config_path,
+                distributed_port,
+                master_addr=DEFAULT_DISTRIBUTED_MASTER_ADDR,
+            )
             command_config = runtime_config_path
             if collect_import_metadata:
                 hydra_validation_result = run_hydra_config_validation(
@@ -898,6 +956,7 @@ def inspect_training_config(
                     runtime_config_path=runtime_config_path,
                     sam3_import_path=import_guard_result.get("sam3") if import_guard_result else None,
                     python_executable=import_guard_result.get("python") if import_guard_result else None,
+                    distributed=distributed_metadata,
                 )
 
     # train.py resolves -c as a Hydra config name inside pkg://sam3.train, so the
@@ -954,6 +1013,7 @@ def inspect_training_config(
             "requested_num_workers": num_workers,
             "resolved_num_workers": resolved_num_workers,
             "training_provenance": training_provenance,
+            "distributed": distributed_metadata,
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
         training_config_summary = {
@@ -982,6 +1042,7 @@ def inspect_training_config(
             "requested_training_prompt": training_prompt,
             "resolved_training_prompt": resolved_training_prompt,
             "training_provenance": training_provenance,
+            "distributed": distributed_metadata,
         }
         (run_dir / "training_config_summary.json").write_text(
             json.dumps(training_config_summary, ensure_ascii=False, indent=2) + "\n",

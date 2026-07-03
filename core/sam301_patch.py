@@ -143,6 +143,7 @@ def collect_training_provenance(
     sam3_import_path: str | None = None,
     python_executable: str | None = None,
     manifest_path: Path | None = None,
+    distributed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Machine-readable provenance for runs that depend on the SAM301 patch."""
     manifest_file = _resolve_manifest_path(manifest_path)
@@ -174,6 +175,7 @@ def collect_training_provenance(
         "python_executable": python_executable,
         "runtime_yaml_path": str(runtime_path) if runtime_path else None,
         "runtime_yaml_sha256": sha256_of_file(runtime_path) if runtime_path and runtime_path.is_file() else None,
+        "distributed": distributed,
     }
 
 

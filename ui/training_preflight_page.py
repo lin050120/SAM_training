@@ -19,7 +19,12 @@ from core.config import (
 )
 from core.sam301_patch import verify_patched_for_training
 from core.sam301_patch import collect_training_provenance
-from core.training_runner import training_subprocess_env
+from core.training_runner import (
+    DEFAULT_DISTRIBUTED_MASTER_ADDR,
+    allocate_distributed_port,
+    configure_runtime_distributed_port,
+    training_subprocess_env,
+)
 from ui.training_process_manager import (
     finalize_training_summary,
     make_training_summary_callback,
@@ -159,6 +164,7 @@ def run_training_preflight(
         "resolved_sam3_import_path": preflight.resolved_sam3_import_path,
         "sam3_import_guard_ok": preflight.sam3_import_guard_ok,
         "effective_pythonpath": preflight.effective_pythonpath,
+        "distributed": (preflight.training_provenance or {}).get("distributed"),
         "launch_token": uuid.uuid4().hex,
         "consumed": False,
     }
@@ -204,6 +210,15 @@ def _consume_preflight_for_launch(
         reasons.append(f"sam301 patch guard: {patch_guard_error}")
     if reasons:
         return reasons
+    try:
+        master_port = allocate_distributed_port(DEFAULT_DISTRIBUTED_MASTER_ADDR)
+        state["distributed"] = configure_runtime_distributed_port(
+            Path(str(state["runtime_yaml"])),
+            master_port,
+            master_addr=DEFAULT_DISTRIBUTED_MASTER_ADDR,
+        )
+    except Exception as exc:
+        return [f"distributed port allocation failed before token consumption: {exc!r}"]
     _consumed_preflight_tokens.add(str(token))
     state["consumed"] = True
     state["ok"] = False
@@ -225,6 +240,10 @@ def start_training(
         run_dir = Path(state["run_dir"])
         command = state["command"]
         env = training_subprocess_env(os.environ)
+        distributed = state.get("distributed") or {}
+        if distributed.get("master_addr") and distributed.get("master_port"):
+            env["MASTER_ADDR"] = str(distributed["master_addr"])
+            env["MASTER_PORT"] = str(distributed["master_port"])
         guard = verify_sam3_import_for_training(env=env)
         if not guard["ok"]:
             yield (
@@ -237,6 +256,7 @@ def start_training(
                 runtime_config_path=state.get("runtime_yaml"),
                 sam3_import_path=guard.get("sam3"),
                 python_executable=guard.get("python"),
+                distributed=distributed,
             )
             (run_dir / "provenance.json").write_text(
                 format_json(training_provenance) + "\n",
@@ -259,6 +279,7 @@ def start_training(
                     import_metadata=guard,
                     effective_pythonpath=env.get("PYTHONPATH"),
                     training_provenance=training_provenance,
+                    distributed=distributed,
                 ),
             )
         except Exception as exc:
@@ -280,6 +301,7 @@ def start_training(
         import_metadata=guard,
         effective_pythonpath=env.get("PYTHONPATH"),
         training_provenance=training_provenance,
+        distributed=distributed,
     )
     yield f"status={snap['status']} pid={snap['pid']}", snap["log"], format_json(snap), format_json(summary)
 
