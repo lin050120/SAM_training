@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -516,6 +518,25 @@ class CvatExportCallTest(unittest.TestCase):
 
         report = export_cvat_package(self.run_dir, segmentation_format="polygon")
         self.assertTrue(report["ok"])
+        legacy_path = self.run_dir / "cvat_export" / "annotations" / "instances_default.json"
+        data = json.loads(legacy_path.read_text(encoding="utf-8"))
+        vertex_counts = [len(poly) // 2 for ann in data["annotations"] for poly in ann["segmentation"]]
+        self.assertTrue(vertex_counts)
+        self.assertLessEqual(max(vertex_counts), 8)
+
+    def test_polygon_zip_uses_simplified_annotations_entrypoint(self) -> None:
+        from core.cvat_export import export_cvat_package
+
+        report = export_cvat_package(self.run_dir, segmentation_format="polygon", make_zip=True)
+        self.assertTrue(report["ok"])
+        zip_path = Path(report["zip_path"])
+        self.assertTrue(zip_path.exists())
+        with zipfile.ZipFile(zip_path) as zf:
+            self.assertIn("annotations/instances_default.json", zf.namelist())
+            data = json.loads(zf.read("annotations/instances_default.json").decode("utf-8"))
+        vertex_counts = [len(poly) // 2 for ann in data["annotations"] for poly in ann["segmentation"]]
+        self.assertTrue(vertex_counts)
+        self.assertLessEqual(max(vertex_counts), 8)
 
     def test_rle_export(self) -> None:
         from core.cvat_export import export_cvat_package

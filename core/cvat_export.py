@@ -184,7 +184,13 @@ def _copy_cvat_images(run_dir: Path, cvat_image_dir: Path) -> None:
                 shutil.copy2(src, cvat_image_dir / Path(row["file_name"]).name)
 
 
-def _write_mode_package(run_dir: Path, mode: str, category_name: str, min_area: int) -> dict[str, Any]:
+def _write_mode_package(
+    run_dir: Path,
+    mode: str,
+    category_name: str,
+    min_area: int,
+    legacy_annotation_path: Path | None = None,
+) -> dict[str, Any]:
     image_records, instances_by_image_id = _run_coco_inputs(run_dir)
     coco, _, errors = build_coco(
         image_records,
@@ -197,6 +203,9 @@ def _write_mode_package(run_dir: Path, mode: str, category_name: str, min_area: 
     mode_dir.mkdir(parents=True, exist_ok=True)
     annotation_path = mode_dir / "instances_default.json"
     write_coco(annotation_path, coco)
+    if legacy_annotation_path is not None:
+        legacy_annotation_path.parent.mkdir(parents=True, exist_ok=True)
+        write_coco(legacy_annotation_path, coco)
     report = validate_cvat_package(
         run_dir,
         annotation_path=annotation_path,
@@ -222,16 +231,20 @@ def export_cvat_package(
     cvat_ann_dir = run_dir / "cvat_export" / "annotations"
     cvat_ann_dir.mkdir(parents=True, exist_ok=True)
     _copy_cvat_images(run_dir, cvat_image_dir)
-    if not coco_src.exists() and segmentation_format == "polygon":
-        raise FileNotFoundError(coco_src)
 
     reports: dict[str, Any] = {}
     if segmentation_format in {"polygon", "both"}:
-        if coco_src.exists():
-            shutil.copy2(coco_src, cvat_ann_dir / "instances_default.json")
-            legacy_report = validate_cvat_package(run_dir)
-            write_json(run_dir / "cvat_export" / "validation_report.json", legacy_report)
-        reports["polygon"] = _write_mode_package(run_dir, "polygon", category_name, min_area)
+        legacy_annotation_path = cvat_ann_dir / "instances_default.json"
+        reports["polygon"] = _write_mode_package(
+            run_dir,
+            "polygon",
+            category_name,
+            min_area,
+            legacy_annotation_path=legacy_annotation_path,
+        )
+        legacy_report = validate_cvat_package(run_dir, annotation_path=legacy_annotation_path)
+        legacy_report["polygon_source"] = "generated_from_nms_npz_target_8_points"
+        write_json(run_dir / "cvat_export" / "validation_report.json", legacy_report)
         if segmentation_format == "polygon":
             report = reports["polygon"]
         else:

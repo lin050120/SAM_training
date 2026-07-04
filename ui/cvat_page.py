@@ -13,7 +13,9 @@ from ui.ui_utils import format_json, logger
 INFERENCE_RUNS_ROOT = BOOK_ROOT / "runs" / "inference"
 
 DISCLAIMER = """
-**Polygon**: 可用于 CVAT 兼容流程；是 NMS mask 到外轮廓多边形的有损转换；不适合逐像素精确评价。
+**Polygon**: 可用于 CVAT 兼容流程；导出时会从最终 NMS mask 重新生成约 8 点的低顶点 polygon，
+适合在 CVAT 里拖点修正书脊边界；这是有损转换，不适合逐像素精确评价。生成 ZIP 时，
+`annotations/instances_default.json` 也是这份约 8 点 polygon。
 
 **RLE**: 与最终 NMS bool mask 逐像素一致；当前项目本地验证 19/19 exact（针对 `2026-07-02_12-28-40` 这个真实 run）；
 CVAT 当前版本的**实际人工导入**仍待用户手动确认，本页面不会显示"RLE 已成功导入 CVAT"这类结论。
