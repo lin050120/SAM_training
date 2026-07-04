@@ -11,29 +11,66 @@ from pycocotools import mask as cocomask
 from core.mask_nms import mask_bbox_xywh
 from core.npz_io import InstanceSet
 
+POLYGON_TARGET_POINTS = 8
+POLYGON_MAX_POINTS = 12
+POLYGON_USE_MINRECT_FALLBACK = True
 
-def mask_to_polygon(mask: np.ndarray, min_area: int = 1) -> tuple[list[list[float]], list[float] | None, float]:
+
+def simplify_contour_to_target(
+    contour: np.ndarray,
+    target_points: int = POLYGON_TARGET_POINTS,
+    max_points: int = POLYGON_MAX_POINTS,
+    use_minrect_fallback: bool = POLYGON_USE_MINRECT_FALLBACK,
+) -> np.ndarray:
+    """Approximate one contour to a small CVAT-editable polygon.
+
+    Mirrors the legacy ft_02_1 flow: binary-search approxPolyDP epsilon until the
+    contour has at most target_points while staying as tight as possible. Rectangular
+    spines naturally remain 4 points; irregular masks usually land near 8 points.
+    """
+    if len(contour) < 3:
+        return contour.reshape(-1, 2)
+    peri = cv2.arcLength(contour, True)
+    if peri <= 0:
+        return contour.reshape(-1, 2)
+    lo, hi = 0.0, peri
+    best = cv2.approxPolyDP(contour, peri * 0.02, True)
+    for _ in range(40):
+        mid = (lo + hi) / 2.0
+        approx = cv2.approxPolyDP(contour, mid, True)
+        if len(approx) > target_points:
+            lo = mid
+        else:
+            best = approx
+            hi = mid
+    points = best.reshape(-1, 2)
+    if len(points) < 3:
+        rect = cv2.minAreaRect(contour)
+        points = cv2.boxPoints(rect).astype(np.int32)
+    if use_minrect_fallback and len(points) > max_points:
+        rect = cv2.minAreaRect(contour)
+        points = cv2.boxPoints(rect).astype(np.int32)
+    return points
+
+
+def mask_to_polygon(
+    mask: np.ndarray,
+    min_area: int = 1,
+    target_points: int = POLYGON_TARGET_POINTS,
+    max_points: int = POLYGON_MAX_POINTS,
+) -> tuple[list[list[float]], list[float] | None, float]:
     binary = mask.astype(np.uint8)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    polygons: list[list[float]] = []
-    xs_all: list[np.ndarray] = []
-    ys_all: list[np.ndarray] = []
-    area = 0.0
-    for contour in contours:
-        contour_area = float(cv2.contourArea(contour))
-        if contour_area < min_area or len(contour) < 3:
-            continue
-        points = contour.reshape(-1, 2).astype(float)
-        if len(points) < 3:
-            continue
-        polygons.append(points.reshape(-1).tolist())
-        xs_all.append(points[:, 0])
-        ys_all.append(points[:, 1])
-        area += float(mask.sum()) if not area else 0.0
-    if not polygons:
+    if not contours:
+        return [], None, 0.0
+    contour = max(contours, key=cv2.contourArea)
+    if float(cv2.contourArea(contour)) < min_area or len(contour) < 3:
+        return [], None, 0.0
+    points = simplify_contour_to_target(contour, target_points=target_points, max_points=max_points).astype(float)
+    if len(points) < 3:
         return [], None, 0.0
     bbox = [float(v) for v in mask_bbox_xywh(mask)]
-    return polygons, bbox, float(mask.sum())
+    return [points.reshape(-1).tolist()], bbox, float(mask.sum())
 
 
 def mask_to_rle(mask: np.ndarray) -> dict[str, Any]:
@@ -50,6 +87,8 @@ def build_coco(
     category_name: str = "book_spine",
     min_area: int = 1,
     segmentation_format: str = "polygon",
+    polygon_target_points: int = POLYGON_TARGET_POINTS,
+    polygon_max_points: int = POLYGON_MAX_POINTS,
 ) -> tuple[dict[str, Any], dict[int, list[int]], list[str]]:
     if segmentation_format not in {"polygon", "rle"}:
         raise ValueError(f"Unsupported segmentation_format: {segmentation_format}")
@@ -81,7 +120,12 @@ def build_coco(
                 if area <= 0:
                     continue
             else:
-                polygons, bbox, area = mask_to_polygon(mask, min_area=min_area)
+                polygons, bbox, area = mask_to_polygon(
+                    mask,
+                    min_area=min_area,
+                    target_points=polygon_target_points,
+                    max_points=polygon_max_points,
+                )
                 if not polygons or bbox is None or area <= 0:
                     continue
                 segmentation = polygons
