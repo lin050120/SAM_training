@@ -13,6 +13,7 @@ from ui.cvat_page import build_cvat_tab
 from ui.history_page import build_history_tab
 from ui.inference_page import build_inference_tab
 from ui.results_page import build_results_tab
+from ui.checkpoint_evaluation_page import build_checkpoint_evaluation_tab
 from ui.training_preflight_page import build_training_tab
 
 
@@ -35,6 +36,8 @@ def build_app() -> gr.Blocks:
                 build_cvat_tab()
             with gr.Tab("训练预检"):
                 build_training_tab()
+            with gr.Tab("Checkpoint 评估"):
+                build_checkpoint_evaluation_tab()
     return demo
 
 
