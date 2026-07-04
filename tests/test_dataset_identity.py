@@ -33,6 +33,17 @@ FORMAL_TRAIN_ANNOTATIONS = BOOK_ROOT / "data" / "formal_book_spine_sam3_dataset"
 FORMAL_VAL_ANNOTATIONS = BOOK_ROOT / "data" / "formal_book_spine_sam3_dataset" / "val" / "annotations.json"
 _FORMAL_DATA_PRESENT = FORMAL_TRAIN_ANNOTATIONS.exists() and FORMAL_VAL_ANNOTATIONS.exists()
 
+HUMAN_CORRECTED_TRAIN_IMAGES = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "train" / "images"
+HUMAN_CORRECTED_TRAIN_ANNOTATIONS = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "train" / "annotations.json"
+HUMAN_CORRECTED_VAL_IMAGES = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "val" / "images"
+HUMAN_CORRECTED_VAL_ANNOTATIONS = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "val" / "annotations.json"
+_HUMAN_CORRECTED_DATA_PRESENT = (
+    HUMAN_CORRECTED_TRAIN_IMAGES.exists()
+    and HUMAN_CORRECTED_TRAIN_ANNOTATIONS.exists()
+    and HUMAN_CORRECTED_VAL_IMAGES.exists()
+    and HUMAN_CORRECTED_VAL_ANNOTATIONS.exists()
+)
+
 
 class RegistryLookupTest(unittest.TestCase):
     @unittest.skipUnless(_FORMAL_DATA_PRESENT, "formal split COCO files not present on this machine")
@@ -88,22 +99,34 @@ class RegistryLookupTest(unittest.TestCase):
         data = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
         self.assertIn("schema_version", data)
         self.assertGreaterEqual(len(data["datasets"]), 1)
-        entry = data["datasets"][0]
-        for field in [
-            "dataset_id",
-            "annotation_source",
-            "human_reviewed",
-            "independently_corrected_gt",
-            "allowed_for_formal_training",
-            "allowed_for_model_evaluation",
-            "image_file_count",
-            "unique_image_count",
-            "annotation_count",
-            "exact_duplicate_group_count",
-            "dataset_manifest_sha256",
-            "split_manifest_sha256",
-        ]:
-            self.assertIn(field, entry, f"missing required registry field: {field}")
+        for entry in data["datasets"]:
+            for field in [
+                "dataset_id",
+                "annotation_source",
+                "human_reviewed",
+                "independently_corrected_gt",
+                "allowed_for_formal_training",
+                "allowed_for_model_evaluation",
+                "image_file_count",
+                "unique_image_count",
+                "annotation_count",
+                "exact_duplicate_group_count",
+                "dataset_manifest_sha256",
+                "split_manifest_sha256",
+            ]:
+                self.assertIn(field, entry, f"{entry.get('dataset_id')}: missing required registry field: {field}")
+
+    @unittest.skipUnless(_HUMAN_CORRECTED_DATA_PRESENT, "human-corrected train/val COCO files not present on this machine")
+    def test_human_corrected_dataset_is_identified_as_formal_training_dataset(self) -> None:
+        identity = resolve_dataset_identity(HUMAN_CORRECTED_TRAIN_ANNOTATIONS, HUMAN_CORRECTED_VAL_ANNOTATIONS)
+        self.assertTrue(identity.matched)
+        self.assertEqual(identity.dataset_id, "book_spine_human_corrected_v1")
+        self.assertEqual(identity.annotation_source, "sam3_preannotation_then_human_corrected")
+        self.assertTrue(identity.human_reviewed)
+        self.assertTrue(identity.independently_corrected_gt)
+        self.assertTrue(identity.allowed_for_formal_training)
+        self.assertFalse(identity.allowed_for_model_evaluation)
+        self.assertIsNone(identity.warning)
 
 
 class TrainingModeGuardTest(unittest.TestCase):
@@ -167,22 +190,25 @@ class PreflightIdentityIntegrationTest(unittest.TestCase):
     """End-to-end: real inspect_training_config() against the real formal dataset."""
 
     def test_one_epoch_smoke_preflight_passes_and_writes_identity_to_run_files(self) -> None:
-        from core.training_runner import inspect_training_config
+        from core import training_runner
 
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
-            preflight = inspect_training_config(
-                training_prompt="book spine",
-                max_epochs=1,
-                train_batch_size=1,
-                gradient_accumulation_steps=4,
-                train_images=BOOK_ROOT / "data" / "dataset_raw",
-                train_annotations=FORMAL_TRAIN_ANNOTATIONS,
-                val_images=BOOK_ROOT / "data" / "dataset_raw",
-                val_annotations=FORMAL_VAL_ANNOTATIONS,
-                output_root=Path(tmp),
-                prepare_runtime=True,
-                collect_import_metadata=False,
-            )
+            fake_distributed = {"master_addr": "localhost", "master_port": 42017, "port_range": [42017, 42017]}
+            with mock.patch.object(training_runner, "allocate_distributed_port", return_value=42017), \
+                mock.patch.object(training_runner, "configure_runtime_distributed_port", return_value=fake_distributed):
+                preflight = training_runner.inspect_training_config(
+                    training_prompt="book spine",
+                    max_epochs=1,
+                    train_batch_size=1,
+                    gradient_accumulation_steps=4,
+                    train_images=BOOK_ROOT / "data" / "dataset_raw",
+                    train_annotations=FORMAL_TRAIN_ANNOTATIONS,
+                    val_images=BOOK_ROOT / "data" / "dataset_raw",
+                    val_annotations=FORMAL_VAL_ANNOTATIONS,
+                    output_root=Path(tmp),
+                    prepare_runtime=True,
+                    collect_import_metadata=False,
+                )
             self.assertEqual(preflight.errors, [])
             self.assertIsNotNone(preflight.dataset_identity)
             self.assertFalse(preflight.dataset_identity["human_reviewed"])
@@ -238,6 +264,51 @@ class PreflightIdentityIntegrationTest(unittest.TestCase):
         self.assertTrue(any("exceeds the smoke-mode limit" in e for e in preflight.errors))
 
 
+@unittest.skipUnless(_HUMAN_CORRECTED_DATA_PRESENT, "human-corrected train/val COCO files not present on this machine")
+class HumanCorrectedPreflightIntegrationTest(unittest.TestCase):
+    def test_formal_twenty_epoch_preflight_passes_dataset_identity_guard(self) -> None:
+        from core import training_runner
+
+        with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
+            fake_distributed = {"master_addr": "localhost", "master_port": 42017, "port_range": [42017, 42017]}
+            with mock.patch.object(training_runner, "allocate_distributed_port", return_value=42017), \
+                mock.patch.object(training_runner, "configure_runtime_distributed_port", return_value=fake_distributed):
+                preflight = training_runner.inspect_training_config(
+                    training_prompt="book spine",
+                    max_epochs=20,
+                    train_batch_size=1,
+                    gradient_accumulation_steps=4,
+                    num_gpus=1,
+                    train_images=HUMAN_CORRECTED_TRAIN_IMAGES,
+                    train_annotations=HUMAN_CORRECTED_TRAIN_ANNOTATIONS,
+                    val_images=HUMAN_CORRECTED_VAL_IMAGES,
+                    val_annotations=HUMAN_CORRECTED_VAL_ANNOTATIONS,
+                    output_root=Path(tmp),
+                    prepare_runtime=True,
+                    collect_import_metadata=False,
+                    training_mode="formal",
+                )
+            self.assertEqual(preflight.errors, [])
+            self.assertIsNotNone(preflight.dataset_identity)
+            self.assertEqual(preflight.dataset_identity["dataset_id"], "book_spine_human_corrected_v1")
+            self.assertTrue(preflight.dataset_identity["matched"])
+            self.assertEqual(
+                preflight.dataset_identity["annotation_source"],
+                "sam3_preannotation_then_human_corrected",
+            )
+            self.assertTrue(preflight.dataset_identity["human_reviewed"])
+            self.assertTrue(preflight.dataset_identity["independently_corrected_gt"])
+            self.assertTrue(preflight.dataset_identity["allowed_for_formal_training"])
+            self.assertFalse(preflight.dataset_identity["allowed_for_model_evaluation"])
+
+            run_dir = Path(preflight.run_dir)
+            dataset_info = json.loads((run_dir / "dataset_info.json").read_text(encoding="utf-8"))
+            config_summary = json.loads((run_dir / "training_config_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(dataset_info["dataset_identity"]["dataset_id"], "book_spine_human_corrected_v1")
+            self.assertEqual(config_summary["training_mode"], "formal")
+            self.assertEqual(config_summary["max_epochs"], 20)
+
+
 class HistoricalManifestUntouchedTest(unittest.TestCase):
     """This session must not modify formal_dataset_manifest.json / formal_split_manifest.json
     or any historical run's recorded provenance — their SHA256 (independently recomputed
@@ -254,6 +325,19 @@ class HistoricalManifestUntouchedTest(unittest.TestCase):
         entry = registry["datasets"][0]
         self.assertEqual(dataset_sha, entry["dataset_manifest_sha256"])
         self.assertEqual(split_sha, entry["split_manifest_sha256"])
+
+    def test_human_corrected_manifest_hashes_match_registry(self) -> None:
+        registry = json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))
+        entries = {entry["dataset_id"]: entry for entry in registry["datasets"]}
+        entry = entries.get("book_spine_human_corrected_v1")
+        if entry is None:
+            self.skipTest("human-corrected registry entry not present")
+        dataset_manifest = BOOK_ROOT / entry["dataset_manifest_path"]
+        split_manifest = BOOK_ROOT / entry["split_manifest_path"]
+        self.assertTrue(dataset_manifest.is_file())
+        self.assertTrue(split_manifest.is_file())
+        self.assertEqual(hashlib.sha256(dataset_manifest.read_bytes()).hexdigest(), entry["dataset_manifest_sha256"])
+        self.assertEqual(hashlib.sha256(split_manifest.read_bytes()).hexdigest(), entry["split_manifest_sha256"])
 
     def test_a_historical_run_provenance_referencing_the_manifest_is_unaffected(self) -> None:
         run_dir = BOOK_ROOT / "runs" / "training" / "2026-07-03_14-42-27"

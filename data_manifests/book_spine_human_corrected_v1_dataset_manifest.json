@@ -1,0 +1,468 @@
+{
+  "schema_version": 1,
+  "dataset_id": "book_spine_human_corrected_v1",
+  "created_at": "2026-07-04T00:00:00+09:00",
+  "book_root": "/home/book/book01",
+  "annotation_source": "sam3_preannotation_then_human_corrected",
+  "human_reviewed": true,
+  "independently_corrected_gt": true,
+  "intended_use": "formal_training_and_validation",
+  "allowed_for_formal_training": true,
+  "allowed_for_model_evaluation": false,
+  "review_note": "Train and val images and instances were manually checked and corrected from SAM3 pre-annotations. No independent test split is registered, so this dataset is not approved for final model evaluation.",
+  "splits": {
+    "train": {
+      "images_dir": "data/book_spine_sam3_dataset/train/images",
+      "annotations_path": "data/book_spine_sam3_dataset/train/annotations.json",
+      "annotations_sha256": "dc1ff7eb90dc3bc435e7f24cd7834be6ae5849f42259bcb53f19dc9404db0eeb",
+      "image_count": 44,
+      "unique_image_count": 44,
+      "annotation_count": 857,
+      "categories": [
+        {
+          "id": 1,
+          "name": "book spine",
+          "supercategory": ""
+        }
+      ],
+      "images": [
+        {
+          "file_name": "im_000013.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000013.png",
+          "sha256": "b2638d40dee0fe4609e7073d4740613124c0575bfba9af358c0343fe3aa282c1",
+          "width": 1280,
+          "height": 720,
+          "image_id": 14
+        },
+        {
+          "file_name": "im_000014.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000014.png",
+          "sha256": "262c70a77161755800ee11d807cd9bf355b9ac87767bd61e4b8b459d48d95f0d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 42
+        },
+        {
+          "file_name": "im_000015.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000015.png",
+          "sha256": "3e2306580f94c8e79929a31f9dbfb30fd009930b9af2e12569974744912c0fd3",
+          "width": 1280,
+          "height": 720,
+          "image_id": 31
+        },
+        {
+          "file_name": "im_000017.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000017.png",
+          "sha256": "cd1b7e00be492df3c24c06c25c6d9c60131bdb4def51dd23536f2c1a5b84040a",
+          "width": 1280,
+          "height": 720,
+          "image_id": 9
+        },
+        {
+          "file_name": "im_000018.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000018.png",
+          "sha256": "8bb3f3e93f5befe7d9f007af2329d4fb80248dcf8f2cb4e8d9fca344edd0d4f2",
+          "width": 1280,
+          "height": 720,
+          "image_id": 34
+        },
+        {
+          "file_name": "im_000019.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000019.png",
+          "sha256": "c91987955d291240e4ec0d11de07e8d6435a80860530d7d75d4367bfa5a75faf",
+          "width": 1280,
+          "height": 720,
+          "image_id": 36
+        },
+        {
+          "file_name": "im_000020.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000020.png",
+          "sha256": "db36bce6f503faab279a326f215fd8a7d32f31f4bc7d6c8f4fb2e89fc920a62e",
+          "width": 1280,
+          "height": 720,
+          "image_id": 43
+        },
+        {
+          "file_name": "im_000021.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000021.png",
+          "sha256": "2ddc3400ec3b48ea9fe70b1bc24f25c4967f3d8c242d5d44ad28caec0af22b90",
+          "width": 1280,
+          "height": 720,
+          "image_id": 37
+        },
+        {
+          "file_name": "im_000023.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000023.png",
+          "sha256": "659775148fc5a244bf2aef10e4788c57c0c1abf81c8500c69734d73e18eff5d6",
+          "width": 1280,
+          "height": 720,
+          "image_id": 11
+        },
+        {
+          "file_name": "im_000024.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000024.png",
+          "sha256": "628364ea54f7e991631543bce38aec6974c800ea455532a16f7a3da4f7662354",
+          "width": 1280,
+          "height": 720,
+          "image_id": 2
+        },
+        {
+          "file_name": "im_000025.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000025.png",
+          "sha256": "a6cd750d3dcf55b285b4b0bc631ed415c4357fd95e9a90ebe3be118838b1ff6b",
+          "width": 1280,
+          "height": 720,
+          "image_id": 24
+        },
+        {
+          "file_name": "im_000026.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000026.png",
+          "sha256": "cc7d4ea81843c9486b22f974515b24818d2198a90c8944471edeb9e1c3b00098",
+          "width": 1280,
+          "height": 720,
+          "image_id": 28
+        },
+        {
+          "file_name": "im_000027.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000027.png",
+          "sha256": "dc780e2be866b2d2578049f81bdf17b0437697ee1b8acdfde9c4ad1d8dba2fe1",
+          "width": 1280,
+          "height": 720,
+          "image_id": 38
+        },
+        {
+          "file_name": "im_000028.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000028.png",
+          "sha256": "13bc17778f394ab390aaeebb2a57848327982799e24ce207f5a9783d1a7807e2",
+          "width": 1280,
+          "height": 720,
+          "image_id": 39
+        },
+        {
+          "file_name": "im_000030.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000030.png",
+          "sha256": "d9ebaeffeb4a5d909115f2443081ac0873206e2608996e6ad8b9b82128440739",
+          "width": 1280,
+          "height": 720,
+          "image_id": 40
+        },
+        {
+          "file_name": "im_000031.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000031.png",
+          "sha256": "8a3d8da4018ad56a876470d1c3d679bf6d6ed73d7a0d819146cd5adf2a0824e6",
+          "width": 1280,
+          "height": 720,
+          "image_id": 16
+        },
+        {
+          "file_name": "im_000032.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000032.png",
+          "sha256": "7e67aeb6c73a2dd74d7fda462e720044892fc650f3603d4671844cac6f36dfb8",
+          "width": 1280,
+          "height": 720,
+          "image_id": 1
+        },
+        {
+          "file_name": "im_000033.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000033.png",
+          "sha256": "61a927f7aa7eae5854d1c7aaf856a82528c1fbc274e7a1ab01745b7e63681129",
+          "width": 1280,
+          "height": 720,
+          "image_id": 22
+        },
+        {
+          "file_name": "im_000035.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000035.png",
+          "sha256": "82cfeef00e66a1bbcca2eac5c3aa5bced074141daff1f357d785007c1952943d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 23
+        },
+        {
+          "file_name": "im_000037.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000037.png",
+          "sha256": "5e5ed52ebefd5bfaedca68889b6c27a43a5d63c20e5e9ddff8c5d36fb195ff29",
+          "width": 1280,
+          "height": 720,
+          "image_id": 4
+        },
+        {
+          "file_name": "im_000039.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000039.png",
+          "sha256": "cfdc0a69ddf2cd886bf42ab623a8c9798be85c99f5c65259b685d89750da1868",
+          "width": 1280,
+          "height": 720,
+          "image_id": 12
+        },
+        {
+          "file_name": "im_000040.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000040.png",
+          "sha256": "afb48b0253077134208f50bec892c5adebea340195ba6752c673505cd45a9498",
+          "width": 1280,
+          "height": 720,
+          "image_id": 32
+        },
+        {
+          "file_name": "im_000041.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000041.png",
+          "sha256": "17a60652637096ba4f3ec0b57ea51fa6c9e95481da1416db8283a7e243f1b0be",
+          "width": 1280,
+          "height": 720,
+          "image_id": 10
+        },
+        {
+          "file_name": "im_000042.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000042.png",
+          "sha256": "13131bfc047ee08c4fc5ee6e817dc029ce1651b2554ca1fb189434f118641a63",
+          "width": 1280,
+          "height": 720,
+          "image_id": 6
+        },
+        {
+          "file_name": "im_000043.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000043.png",
+          "sha256": "bca821dbbff8ef39130985379d28bf9035982a1876f9d04beeab8bca4e39ee9a",
+          "width": 1280,
+          "height": 720,
+          "image_id": 21
+        },
+        {
+          "file_name": "im_000044.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000044.png",
+          "sha256": "8de5c711cd9500fa890354e8b6da4592c2e9227a2680b483f973967292007541",
+          "width": 1280,
+          "height": 720,
+          "image_id": 7
+        },
+        {
+          "file_name": "im_000045.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000045.png",
+          "sha256": "988bb1f76cdd3e0d52872d32c2e458b5cdbd42fbfce501262669ecc2c5bb44e5",
+          "width": 1280,
+          "height": 720,
+          "image_id": 26
+        },
+        {
+          "file_name": "im_000046.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000046.png",
+          "sha256": "02bfd5afa277f428e66a4a6fc25b2b67e46655b8f55f20ae5a0d170b04e2de36",
+          "width": 1280,
+          "height": 720,
+          "image_id": 5
+        },
+        {
+          "file_name": "im_000047.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000047.png",
+          "sha256": "8641217d78ef54893b93f700ddd032c4b482747423ce760f080b0f3f51887b5b",
+          "width": 1280,
+          "height": 720,
+          "image_id": 35
+        },
+        {
+          "file_name": "im_000048.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000048.png",
+          "sha256": "9ead3ac63f898569d1db3e1388180a0333821c4976e12452f45f0243bb6cd07f",
+          "width": 1280,
+          "height": 720,
+          "image_id": 19
+        },
+        {
+          "file_name": "im_000049.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000049.png",
+          "sha256": "5ec5e74bbd8156237fb0f3be65811285edf79530a7fd04f711db2293e9183ce1",
+          "width": 1280,
+          "height": 720,
+          "image_id": 13
+        },
+        {
+          "file_name": "im_000050.png",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000050.png",
+          "sha256": "105791d3109aef5e4b662b6d111213e6b103c5868d1cc4bd7b67a0cd84635b0b",
+          "width": 1280,
+          "height": 720,
+          "image_id": 33
+        },
+        {
+          "file_name": "im_000053.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000053.jpg",
+          "sha256": "5d44f6eeba31d0e373f8582a7520d06e97d93f99e1ba17e620bfbd3863535c75",
+          "width": 1280,
+          "height": 549,
+          "image_id": 44
+        },
+        {
+          "file_name": "im_000054.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000054.jpg",
+          "sha256": "a0b31538bf5a48b4fffba0d2b21bae7b6dabec8c15f2bdc83376e6e44d4b311b",
+          "width": 1280,
+          "height": 720,
+          "image_id": 29
+        },
+        {
+          "file_name": "im_000055.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000055.jpg",
+          "sha256": "b07c61ad6b2fa500e76effddd70147e9f01331813c7b67dc3b2f5882e6729c2d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 17
+        },
+        {
+          "file_name": "im_000056.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000056.jpg",
+          "sha256": "fb70ea6c46c6e4d5187cc396a97095338f7784b29dcb5f9c4df7229db1013519",
+          "width": 1280,
+          "height": 720,
+          "image_id": 8
+        },
+        {
+          "file_name": "im_000057.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000057.jpg",
+          "sha256": "794b9b2d635251f60331cb1e9a87c6e72790f9c688d21569e1cbf35810976022",
+          "width": 1280,
+          "height": 720,
+          "image_id": 15
+        },
+        {
+          "file_name": "im_000058.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000058.jpg",
+          "sha256": "d8ad035ebe1cde3e207e5636a73474d868a723f7e4dc76e905bbd3ee55e97391",
+          "width": 1280,
+          "height": 720,
+          "image_id": 27
+        },
+        {
+          "file_name": "im_000059.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000059.jpg",
+          "sha256": "2f0ddde50ffc58d0836494cde410df7f9576c00fa0ea54975e047b04335f6b3e",
+          "width": 1280,
+          "height": 720,
+          "image_id": 3
+        },
+        {
+          "file_name": "im_000060.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000060.jpg",
+          "sha256": "e6a07d6917c8c658cc07e88a16bd9b951993375ed952f2400ec217f24ba18f93",
+          "width": 1280,
+          "height": 720,
+          "image_id": 41
+        },
+        {
+          "file_name": "im_000061.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000061.jpg",
+          "sha256": "da11b0a1a8a5d354af379148957ad796d3cf682a5e350d8248cd527f5e4b1a3d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 20
+        },
+        {
+          "file_name": "im_000062.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000062.jpg",
+          "sha256": "d736309c67c8b2d7695c5864c703f0fd2fdea92865b29c09a7fe8e51b719fad4",
+          "width": 1280,
+          "height": 720,
+          "image_id": 30
+        },
+        {
+          "file_name": "im_000063.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000063.jpg",
+          "sha256": "f1652089f1bd86a19370affe5705e05da141df14ddd66f09df964f18f26c5fab",
+          "width": 1280,
+          "height": 720,
+          "image_id": 18
+        },
+        {
+          "file_name": "im_000064.jpg",
+          "path": "data/book_spine_sam3_dataset/train/images/im_000064.jpg",
+          "sha256": "b7f40f90ef376e8d54b8af765a4450f295d8f56496b098bea2d24dbb6c9b7505",
+          "width": 1280,
+          "height": 720,
+          "image_id": 25
+        }
+      ]
+    },
+    "val": {
+      "images_dir": "data/book_spine_sam3_dataset/val/images",
+      "annotations_path": "data/book_spine_sam3_dataset/val/annotations.json",
+      "annotations_sha256": "eaf76ce4ce03a7a8b21aed8b403d862e436bdc8ed20913c36734af8f04a1eae3",
+      "image_count": 8,
+      "unique_image_count": 8,
+      "annotation_count": 155,
+      "categories": [
+        {
+          "id": 1,
+          "name": "book spine",
+          "supercategory": ""
+        }
+      ],
+      "images": [
+        {
+          "file_name": "im_000016.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000016.png",
+          "sha256": "8d95b4e8fff7b6880b8d411d262af3766a5eee05dd70c57703885fb3a6bae306",
+          "width": 1280,
+          "height": 720,
+          "image_id": 4
+        },
+        {
+          "file_name": "im_000022.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000022.png",
+          "sha256": "f5d8aaf88b0ec4bca4c390cd23623f50e19a5ac12fa40deb3935b4cb9f3e6f01",
+          "width": 1280,
+          "height": 720,
+          "image_id": 1
+        },
+        {
+          "file_name": "im_000029.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000029.png",
+          "sha256": "3cc2e96c828b97895808ab1287574fbe3ab12aad9afb0eb6e76da8273e49ca09",
+          "width": 1280,
+          "height": 720,
+          "image_id": 7
+        },
+        {
+          "file_name": "im_000034.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000034.png",
+          "sha256": "b3095e3892d858e82b5d005a1c5d2a34f0934c837f63a1a56261dc0bcb9c657d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 5
+        },
+        {
+          "file_name": "im_000036.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000036.png",
+          "sha256": "0930a3069ec4f747d64fe520db2757614a394ed794897a959004932cbd9349cb",
+          "width": 1280,
+          "height": 720,
+          "image_id": 2
+        },
+        {
+          "file_name": "im_000038.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000038.png",
+          "sha256": "95de7e6e7a426711612f018ffc2571920ab8912e840299110ab690c3b3c3ae32",
+          "width": 1280,
+          "height": 720,
+          "image_id": 3
+        },
+        {
+          "file_name": "im_000051.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000051.png",
+          "sha256": "302f70786b91bc2a9f7c34980519d735dcfb88a4b4db85c5367fed84c7c2710d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 6
+        },
+        {
+          "file_name": "im_000052.png",
+          "path": "data/book_spine_sam3_dataset/val/images/im_000052.png",
+          "sha256": "6c29bb6921c24244bf024b9cd746d82d0caec03d5886874d9ec69902bfd7d738",
+          "width": 1280,
+          "height": 720,
+          "image_id": 8
+        }
+      ]
+    }
+  },
+  "total_image_file_count": 52,
+  "total_unique_image_count": 52,
+  "total_annotation_count": 1012
+}

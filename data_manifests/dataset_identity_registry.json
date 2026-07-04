@@ -50,6 +50,44 @@
         "docs/E3_DATASET_IDENTITY_ERRATUM.md"
       ],
       "how_to_promote_to_formal": "Re-export human-corrected polygons from CVAT for these images (or a superseding manual annotation batch), regenerate data_manifests/formal_dataset_manifest.json and formal_split_manifest.json from the corrected COCO files, add a NEW entry to this registry with a new dataset_id, human_reviewed=true, independently_corrected_gt=true, and allowed_for_formal_training=true only after independent verification of the correction."
+    },
+    {
+      "dataset_id": "book_spine_human_corrected_v1",
+      "annotation_source": "sam3_preannotation_then_human_corrected",
+      "annotation_source_evidence": "Train and val annotations started from SAM3 pre-annotations; all train/val images and all instances were manually checked and corrected. No independent test split is registered, so model-evaluation approval remains false.",
+      "human_reviewed": true,
+      "independently_corrected_gt": true,
+      "intended_use": "formal_training_and_validation",
+      "allowed_for_formal_training": true,
+      "allowed_for_model_evaluation": false,
+      "max_epochs_without_human_review": 1,
+      "dataset_manifest_path": "data_manifests/book_spine_human_corrected_v1_dataset_manifest.json",
+      "dataset_manifest_sha256": "c295b3b1c223508490b5096e40dc86133dada15647a3c7378fb9d7a501719371",
+      "split_manifest_path": "data_manifests/book_spine_human_corrected_v1_split_manifest.json",
+      "split_manifest_sha256": "451084678b181bcc7f79ced2f0078db6c084cd6c95022e0e3d5756a82b38494e",
+      "source_coco_file_count": 2,
+      "image_file_count": 52,
+      "unique_image_count": 52,
+      "annotation_count": 1012,
+      "exact_duplicate_group_count": 0,
+      "splits": {
+        "train": {
+          "annotations_path": "data/book_spine_sam3_dataset/train/annotations.json",
+          "file_count": 44,
+          "unique_image_count": 44,
+          "annotation_count": 857
+        },
+        "val": {
+          "annotations_path": "data/book_spine_sam3_dataset/val/annotations.json",
+          "file_count": 8,
+          "unique_image_count": 8,
+          "annotation_count": 155
+        }
+      },
+      "basis_and_review_reports": [
+        "docs/USER_GUIDE_ZH_CN.md"
+      ],
+      "evaluation_limitation": "No independent test split is registered; allowed_for_model_evaluation remains false until a held-out reviewed test set is added."
     }
   ]
 }

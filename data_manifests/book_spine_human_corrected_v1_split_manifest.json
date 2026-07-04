@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "dataset_id": "book_spine_human_corrected_v1",
+  "created_at": "2026-07-04T00:00:00+09:00",
+  "seed": null,
+  "split_policy": "pre-existing human-corrected train/val split; no independent test split registered",
+  "splits": {
+    "train": {
+      "images_dir": "data/book_spine_sam3_dataset/train/images",
+      "annotations_path": "data/book_spine_sam3_dataset/train/annotations.json",
+      "annotations_sha256": "dc1ff7eb90dc3bc435e7f24cd7834be6ae5849f42259bcb53f19dc9404db0eeb",
+      "image_count": 44,
+      "unique_image_count": 44,
+      "annotation_count": 857,
+      "categories": [
+        {
+          "id": 1,
+          "name": "book spine",
+          "supercategory": ""
+        }
+      ]
+    },
+    "val": {
+      "images_dir": "data/book_spine_sam3_dataset/val/images",
+      "annotations_path": "data/book_spine_sam3_dataset/val/annotations.json",
+      "annotations_sha256": "eaf76ce4ce03a7a8b21aed8b403d862e436bdc8ed20913c36734af8f04a1eae3",
+      "image_count": 8,
+      "unique_image_count": 8,
+      "annotation_count": 155,
+      "categories": [
+        {
+          "id": 1,
+          "name": "book spine",
+          "supercategory": ""
+        }
+      ]
+    }
+  },
+  "total_image_file_count": 52,
+  "total_unique_image_count": 52,
+  "total_annotation_count": 1012,
+  "no_independent_test_split": true
+}

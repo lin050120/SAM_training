@@ -656,12 +656,12 @@ class PreflightGuardsTest(unittest.TestCase):
         from core.training_runner import inspect_training_config
 
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
-            # real train set has 8 images; effective = 1 x 16 x 1 = 16 > 8
+            # current default train set has 44 images; effective = 1 x 64 x 1 = 64 > 44
             preflight = inspect_training_config(
                 training_prompt="book spine",
                 max_epochs=1,
                 train_batch_size=1,
-                gradient_accumulation_steps=16,
+                gradient_accumulation_steps=64,
                 output_root=Path(tmp),
                 prepare_runtime=True,
                 collect_import_metadata=False,
@@ -678,7 +678,7 @@ class PreflightGuardsTest(unittest.TestCase):
         from core.training_runner import inspect_training_config
 
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
-            # 8 images, effective = 3 -> 2 full outer batches, 2 images dropped
+            # 44 images, effective = 3 -> 14 full outer batches, 2 images dropped
             preflight = inspect_training_config(
                 training_prompt="book spine",
                 max_epochs=1,
