@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", type=Path, default=Path("/home/book/book01/runs"))
     parser.add_argument("--book-root", type=Path, default=Path("/home/book/book01"))
     parser.add_argument("--sam3-root", type=Path, default=Path("/home/book/sam301"))
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_SAM3_CHECKPOINT)
+    parser.add_argument("--checkpoint", "--model-path", dest="checkpoint", type=Path, default=DEFAULT_SAM3_CHECKPOINT)
     parser.add_argument("--prompt", default="book spine")
     parser.add_argument("--score-threshold", type=float, default=0.3)
     parser.add_argument("--confidence-threshold", type=float, default=0.05)

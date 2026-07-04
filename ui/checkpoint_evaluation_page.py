@@ -19,6 +19,7 @@ import gradio as gr
 
 from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_TRAINING_RUN_ROOT
 from core.dataset_identity import resolve_validation_identity
+from core.sam_model_registry import model_provenance, scan_trainer_checkpoints
 from ui.process_manager import ProcessManager
 from ui.ui_utils import format_json, logger
 
@@ -34,6 +35,9 @@ if not globals().get("_EVALUATION_SHUTDOWN_REGISTERED", False):
 RANKING_HEADERS = [
     "Checkpoint", "Epoch", "Mean IoU", "Boundary F1", "Recall@0.5", "Miss Rate",
     "FP/Image", "Area Ratio", "状态",
+]
+CHECKPOINT_HEADERS = [
+    "文件名", "Epoch", "大小", "SHA256", "Alias", "Alias 指向", "类型", "已有 inference", "可导出", "加载检查",
 ]
 
 
@@ -246,6 +250,123 @@ def export_best_model(run_dir_str: str) -> str:
     return f"导出失败 (exit={state.returncode}):\n{log_text[-1000:]}"
 
 
+def refresh_checkpoint_list(run_dir_str: str) -> tuple[list[list[Any]], str, Any, str, str, str]:
+    if not run_dir_str:
+        return [], "未选择 run", gr.update(choices=[], value=None), "", "", ""
+    try:
+        items = scan_trainer_checkpoints(run_dir_str)
+    except Exception as exc:
+        return [], f"ERROR: {exc}", gr.update(choices=[], value=None), "", "", ""
+    rows = [
+        [
+            item.name,
+            item.epoch if item.epoch is not None else "—",
+            item.size_bytes,
+            item.sha256 or "—",
+            "yes" if item.is_alias else "no",
+            item.alias_of or "—",
+            item.checkpoint_type,
+            item.existing_inference_model or "—",
+            "yes" if item.can_export else "no",
+            item.load_status,
+        ]
+        for item in items
+    ]
+    choices = [item.name for item in items]
+    selected = choices[0] if choices else ""
+    detail, output_name = checkpoint_selection_detail(run_dir_str, selected)
+    output_dir = str(Path(run_dir_str).expanduser().resolve(strict=False) / "checkpoints") if choices else ""
+    return rows, f"发现 {len(items)} 个 checkpoint", gr.update(choices=choices, value=selected or None), detail, output_dir, output_name
+
+
+def checkpoint_selection_detail(run_dir_str: str, checkpoint_name: str) -> tuple[str, str]:
+    if not run_dir_str or not checkpoint_name:
+        return "未选择 checkpoint", ""
+    try:
+        items = scan_trainer_checkpoints(run_dir_str)
+    except Exception as exc:
+        return f"ERROR: {exc}", ""
+    selected = next((item for item in items if item.name == checkpoint_name), None)
+    if selected is None:
+        return f"ERROR: checkpoint 不在列表中: {checkpoint_name}", ""
+    detail = {
+        "name": selected.name,
+        "path": selected.path,
+        "epoch": selected.epoch,
+        "sha256": selected.sha256,
+        "is_alias": selected.is_alias,
+        "alias_of": selected.alias_of,
+        "checkpoint_type": selected.checkpoint_type,
+        "can_export": selected.can_export,
+        "existing_inference_model": selected.existing_inference_model,
+        "suggested_output_name": selected.suggested_output_name,
+        "note": "checkpoint.pt 与编号 checkpoint 字节相同，通常不建议重复导出。" if selected.alias_of else "",
+    }
+    return format_json(detail), selected.suggested_output_name
+
+
+def export_selected_checkpoint(
+    run_dir_str: str,
+    checkpoint_name: str,
+    output_dir_str: str,
+    output_name: str,
+    overwrite: bool,
+) -> tuple[str, str]:
+    if not run_dir_str:
+        return "BLOCKED: 未选择 run", "{}"
+    if not checkpoint_name:
+        return "BLOCKED: 未选择 checkpoint", "{}"
+    if evaluation_process_manager.is_running():
+        return "BLOCKED: 已有一个评价/导出任务在运行", "{}"
+    try:
+        items = scan_trainer_checkpoints(run_dir_str)
+        selected = next((item for item in items if item.name == checkpoint_name), None)
+        if selected is None:
+            return f"BLOCKED: checkpoint 不在列表中: {checkpoint_name}", "{}"
+        if not selected.can_export:
+            return f"BLOCKED: 该文件类型为 {selected.checkpoint_type}，不能作为 trainer checkpoint 导出", format_json(selected.__dict__)
+        output_dir = Path(output_dir_str).expanduser().resolve(strict=False)
+        if not output_dir.is_dir():
+            return f"BLOCKED: 输出目录不存在: {output_dir}", "{}"
+        if not output_name or Path(output_name).name != output_name:
+            return "BLOCKED: 输出文件名必须是普通文件名，不能包含路径", "{}"
+        output_path = (output_dir / output_name).resolve(strict=False)
+        if output_path == Path(selected.path).resolve(strict=False):
+            return "BLOCKED: 输出路径不能等于源 trainer checkpoint", "{}"
+        if output_path.name == "sam3.pt" or str(output_path) == "/home/book/sam301/sam3.pt":
+            return "BLOCKED: 不允许覆盖原始 sam3.pt", "{}"
+        if output_path.exists() and not overwrite:
+            return f"BLOCKED: 输出文件已存在，默认不覆盖: {output_path}", "{}"
+        from core.checkpoint_export import export_inference_checkpoint
+
+        result = export_inference_checkpoint(
+            trainer_checkpoint_path=selected.path,
+            output_path=output_path,
+            overwrite=overwrite,
+        )
+        info = model_provenance(output_path, validate_load=True, device="cpu")
+        payload = {
+            "export": {
+                "output_path": result.output_path,
+                "output_sha256": result.output_sha256,
+                "matched_tensors": result.mapping_result.matched_tensors,
+                "coverage_ratio": result.mapping_result.coverage_ratio,
+                "missing_keys": result.mapping_result.missing,
+                "unexpected_keys": result.mapping_result.unexpected,
+            },
+            "model_info": info,
+        }
+        status = f"导出完成: {output_path}\nmetadata: {output_path.with_suffix('.metadata.json')}"
+        if selected.alias_of:
+            status += f"\n注意: {selected.name} 是 {selected.alias_of} 的 alias。"
+        if overwrite:
+            status += "\n已按用户勾选执行覆盖。"
+        return status, format_json(payload)
+    except Exception as exc:
+        logger.exception("manual_checkpoint_export_failed")
+        return f"ERROR: 导出失败: {type(exc).__name__}: {exc}", "{}"
+
+
 def build_checkpoint_evaluation_tab() -> None:
     gr.Markdown("## Checkpoint 评估：Validation 选最佳，Test 仅作诊断对照")
     gr.Markdown(
@@ -280,6 +401,21 @@ def build_checkpoint_evaluation_tab() -> None:
     progress_box = gr.Textbox(label="评价进度", interactive=False)
     log_box = gr.Textbox(label="评价日志 (stdout/stderr)", lines=14, interactive=False, autoscroll=True)
 
+    gr.Markdown("### 手动导出任意 Trainer Checkpoint")
+    with gr.Row():
+        manual_run_dir = gr.Textbox(label="Run 目录", value=(list_runs_with_checkpoints() or [""])[0])
+        refresh_ckpt_btn = gr.Button("刷新 Checkpoint 列表")
+    checkpoint_table = gr.Dataframe(headers=CHECKPOINT_HEADERS, value=[], interactive=False, wrap=True)
+    with gr.Row():
+        checkpoint_dropdown = gr.Dropdown(label="Checkpoint", choices=[], value=None)
+        output_dir = gr.Textbox(label="输出目录", value="")
+        output_name = gr.Textbox(label="输出文件名", value="")
+    overwrite_box = gr.Checkbox(label="允许覆盖已有输出（谨慎）", value=False)
+    checkpoint_detail = gr.Code(label="选中 checkpoint 详情", language="json")
+    export_selected_btn = gr.Button("导出所选 Checkpoint", variant="primary")
+    manual_export_status = gr.Textbox(label="导出状态和日志", lines=6, interactive=False)
+    manual_export_info = gr.Code(label="导出模型 metadata / 检查结果", language="json")
+
     def _refresh(run_dir_str: str):
         status, val_rows, test_rows, best_text = load_evaluation_state(run_dir_str)
         return status, val_rows, test_rows, best_text, gr.update(choices=list_runs_with_checkpoints())
@@ -298,3 +434,18 @@ def build_checkpoint_evaluation_tab() -> None:
     test_btn.click(fn=start_test_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
     test_force_btn.click(fn=start_test_re_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
     export_btn.click(fn=export_best_model, inputs=[run_dropdown], outputs=[progress_box])
+    refresh_ckpt_btn.click(
+        fn=refresh_checkpoint_list,
+        inputs=[manual_run_dir],
+        outputs=[checkpoint_table, manual_export_status, checkpoint_dropdown, checkpoint_detail, output_dir, output_name],
+    )
+    checkpoint_dropdown.change(
+        fn=checkpoint_selection_detail,
+        inputs=[manual_run_dir, checkpoint_dropdown],
+        outputs=[checkpoint_detail, output_name],
+    )
+    export_selected_btn.click(
+        fn=export_selected_checkpoint,
+        inputs=[manual_run_dir, checkpoint_dropdown, output_dir, output_name, overwrite_box],
+        outputs=[manual_export_status, manual_export_info],
+    )

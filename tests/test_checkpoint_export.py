@@ -306,6 +306,11 @@ class ExportRejectionTest(unittest.TestCase):
             self.assertIn("metadata", loaded)
             self.assertNotIn("optimizer", loaded)
             self.assertNotIn("scaler", loaded)
+            sidecar = out_path.with_suffix(".metadata.json")
+            self.assertTrue(sidecar.exists())
+            sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+            self.assertEqual(sidecar_data["source_trainer_checkpoint"], str(trainer_path.resolve()))
+            self.assertEqual(sidecar_data["source_epoch"], 3)
 
 
 class InferenceLoaderRejectionTest(unittest.TestCase):

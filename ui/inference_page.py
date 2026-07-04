@@ -9,6 +9,7 @@ from typing import Any, Iterator
 import gradio as gr
 
 from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_SAM3_CHECKPOINT, SAM301_ROOT
+from core.sam_model_registry import discover_inference_models, model_provenance, resolve_model_path
 from ui.process_manager import inference_process_manager
 from ui.ui_utils import (
     check_input_path,
@@ -20,6 +21,34 @@ from ui.ui_utils import (
 )
 
 RUN_UNIFIED_INFERENCE_SCRIPT = BOOK_ROOT / "scripts" / "run_unified_inference.py"
+
+
+def discovered_model_choices() -> list[tuple[str, str]]:
+    return [(item["display_name"], item["model_path"]) for item in discover_inference_models()]
+
+
+def resolve_ui_model_path(source: str, discovered_path: str, model_dir: str, filename: str, absolute_path: str) -> str:
+    try:
+        return str(
+            resolve_model_path(
+                source,
+                discovered_path=discovered_path,
+                model_dir=model_dir,
+                filename=filename,
+                absolute_path=absolute_path,
+            )
+        )
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def check_ui_model(source: str, discovered_path: str, model_dir: str, filename: str, absolute_path: str) -> tuple[str, str]:
+    resolved = resolve_ui_model_path(source, discovered_path, model_dir, filename, absolute_path)
+    if resolved.startswith("ERROR:"):
+        return resolved, "{}"
+    info = model_provenance(resolved, validate_load=True, device="cpu")
+    status = "可用于推理" if info.get("validation_status") == "ok" else f"不可用: {info.get('validation_error')}"
+    return status, format_json(info)
 
 
 def build_inference_command(
@@ -108,7 +137,7 @@ def build_inference_command(
         str(Path(input_dir).expanduser()),
         "--output-root",
         str(Path(output_root).expanduser()),
-        "--checkpoint",
+        "--model-path",
         str(Path(checkpoint).expanduser()),
         "--prompt",
         prompt,
@@ -255,7 +284,28 @@ def build_inference_tab() -> None:
 
     with gr.Row():
         input_dir = gr.Textbox(label="input image directory", value=str(BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "test" / "images"))
-        checkpoint = gr.Textbox(label="checkpoint", value=str(DEFAULT_SAM3_CHECKPOINT))
+        checkpoint = gr.Textbox(label="resolved model path", value=str(DEFAULT_SAM3_CHECKPOINT), interactive=False)
+    gr.Markdown("### 模型权重选择")
+    with gr.Row():
+        model_source = gr.Radio(
+            label="模型来源",
+            choices=[
+                ("默认原始 SAM3", "default"),
+                ("已发现 inference models", "discovered"),
+                ("手动输入目录和文件名", "manual_parts"),
+                ("手动输入完整绝对路径", "manual_absolute"),
+            ],
+            value="default",
+        )
+        refresh_models_btn = gr.Button("刷新模型列表")
+        check_model_btn = gr.Button("检查模型")
+    with gr.Row():
+        discovered_model = gr.Dropdown(label="已发现模型", choices=discovered_model_choices(), value=None)
+        model_dir = gr.Textbox(label="模型目录", value=str(DEFAULT_SAM3_CHECKPOINT.parent))
+        model_filename = gr.Textbox(label="模型文件名", value=DEFAULT_SAM3_CHECKPOINT.name)
+    absolute_model_path = gr.Textbox(label="完整绝对路径", value=str(DEFAULT_SAM3_CHECKPOINT))
+    model_status = gr.Textbox(label="模型检查结果", interactive=False)
+    model_info = gr.Code(label="当前选中模型信息", language="json")
     with gr.Row():
         prompt = gr.Textbox(label="prompt", value="book spine")
         device = gr.Radio(label="device", choices=["cuda", "cpu"], value="cuda")
@@ -307,3 +357,23 @@ def build_inference_tab() -> None:
         outputs=[command_box, log_box, status_box],
     )
     stop_btn.click(fn=stop_inference, inputs=[], outputs=[status_box])
+
+    def _refresh_models():
+        choices = discovered_model_choices()
+        return gr.update(choices=choices, value=choices[0][1] if choices else None)
+
+    def _resolve(source, discovered, directory, filename, absolute):
+        return resolve_ui_model_path(source, discovered, directory, filename, absolute)
+
+    for component in [model_source, discovered_model, model_dir, model_filename, absolute_model_path]:
+        component.change(
+            fn=_resolve,
+            inputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path],
+            outputs=[checkpoint],
+        )
+    refresh_models_btn.click(fn=_refresh_models, inputs=[], outputs=[discovered_model])
+    check_model_btn.click(
+        fn=check_ui_model,
+        inputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path],
+        outputs=[model_status, model_info],
+    )

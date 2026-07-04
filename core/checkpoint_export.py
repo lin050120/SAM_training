@@ -401,10 +401,25 @@ def export_inference_checkpoint(
 
     # Self-verification: the file we just wrote must strict-load into a fresh model.
     load_inference_checkpoint(output_path, device="cpu", sam301_root=sam301_root)
+    output_sha256 = sha256_of_file(output_path)
+    try:
+        from core.sam_model_registry import export_sidecar_metadata
+
+        export_sidecar_metadata(
+            output_path,
+            metadata,
+            output_sha256,
+            smoke_test={"strict_load": "ok", "adapter_load": "not_run_in_core_export"},
+        )
+    except Exception:
+        try:
+            output_path.unlink(missing_ok=True)
+        finally:
+            raise
 
     return ExportResult(
         output_path=str(output_path),
-        output_sha256=sha256_of_file(output_path),
+        output_sha256=output_sha256,
         metadata=metadata,
         mapping_result=mapping_result,
     )

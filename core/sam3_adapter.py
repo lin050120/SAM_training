@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+import threading
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -15,6 +17,7 @@ from core.checkpoint_export import (
     CHECKPOINT_TYPE_TRAINER,
     identify_checkpoint,
     load_inference_checkpoint,
+    sha256_of_file,
 )
 from core.config import DEFAULT_SAM3_CHECKPOINT, SAM301_ROOT
 from core.mask_nms import mask_bbox_xywh
@@ -23,6 +26,11 @@ from core.npz_io import InstanceSet
 
 class Sam3Adapter:
     """Small SAM3 image inference adapter used by the unified inference pipeline."""
+
+    _cache_lock = threading.Lock()
+    _cached_key: tuple[str, str, str, str] | None = None
+    _cached_model = None
+    _cached_metadata: dict | None = None
 
     def __init__(
         self,
@@ -46,6 +54,11 @@ class Sam3Adapter:
             raise ValueError(f"Unsupported device: {device}")
         self.device = device
         identity = identify_checkpoint(self.checkpoint)
+        self.checkpoint_type = identity.type
+        self.checkpoint_sha256 = sha256_of_file(self.checkpoint)
+        self.cache_hit = False
+        self.loaded_at = datetime.now(timezone.utc).isoformat()
+        cache_key = (str(self.checkpoint), self.checkpoint_sha256, self.device, identity.type)
         if identity.type == CHECKPOINT_TYPE_TRAINER:
             raise ValueError(
                 f"{self.checkpoint} is a TRAINER checkpoint (contains optimizer/scheduler "
@@ -53,22 +66,36 @@ class Sam3Adapter:
                 "it first: conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py "
                 f"--input {self.checkpoint} --output <inference_model.pt>"
             )
-        if identity.type == CHECKPOINT_TYPE_INFERENCE:
-            self.model, self.checkpoint_metadata = load_inference_checkpoint(
-                self.checkpoint, device=self.device, sam301_root=self.sam3_root
-            )
-        elif identity.type == CHECKPOINT_TYPE_BASE:
-            self.checkpoint_metadata = None
-            try:
-                self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint), device=self.device)
-            except TypeError:
-                self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint))
-                self.model = self.model.to(self.device)
-        else:
-            raise ValueError(
-                f"{self.checkpoint}: unrecognized checkpoint type ({identity.type!r}, "
-                f"error={identity.error!r}); refusing to guess how to load it"
-            )
+        with self._cache_lock:
+            if self.__class__._cached_key == cache_key and self.__class__._cached_model is not None:
+                self.model = self.__class__._cached_model
+                self.checkpoint_metadata = self.__class__._cached_metadata
+                self.cache_hit = True
+            else:
+                self.__class__._cached_model = None
+                self.__class__._cached_metadata = None
+                self.__class__._cached_key = None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                if identity.type == CHECKPOINT_TYPE_INFERENCE:
+                    self.model, self.checkpoint_metadata = load_inference_checkpoint(
+                        self.checkpoint, device=self.device, sam301_root=self.sam3_root
+                    )
+                elif identity.type == CHECKPOINT_TYPE_BASE:
+                    self.checkpoint_metadata = None
+                    try:
+                        self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint), device=self.device)
+                    except TypeError:
+                        self.model = build_sam3_image_model(checkpoint_path=str(self.checkpoint))
+                        self.model = self.model.to(self.device)
+                else:
+                    raise ValueError(
+                        f"{self.checkpoint}: unrecognized checkpoint type ({identity.type!r}, "
+                        f"error={identity.error!r}); refusing to guess how to load it"
+                    )
+                self.__class__._cached_key = cache_key
+                self.__class__._cached_model = self.model
+                self.__class__._cached_metadata = self.checkpoint_metadata
         self.model.eval()
         self.processor = Sam3Processor(self.model)
         self.processor.set_confidence_threshold(confidence_threshold)

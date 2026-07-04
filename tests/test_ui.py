@@ -180,6 +180,7 @@ class InferenceCommandBuilderTest(unittest.TestCase):
         self.assertIsInstance(command, list)
         self.assertTrue(all(isinstance(part, str) for part in command))
         self.assertIn("--device", command)
+        self.assertIn("--model-path", command)
         self.assertIn("cuda", command)
         self.assertNotIn("&&", " ".join(command))
 

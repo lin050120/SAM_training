@@ -16,6 +16,7 @@ from core.mask_nms import apply_mask_nms
 from core.npz_io import InstanceSet, load_npz, save_npz
 from core.run_manager import create_inference_run, runtime_info, setup_file_logger, write_json
 from core.sam3_adapter import Sam3Adapter
+from core.sam_model_registry import model_provenance
 from core.visualization import write_overlay
 
 
@@ -255,6 +256,46 @@ def run_sam3_image_directory(
         device=device,
     )
     model_load_seconds = time.perf_counter() - model_load_start
+    sam_model_info = model_provenance(checkpoint, validate_load=False)
+    sam_model_info.update(
+        {
+            "resolved_model_path": str(Path(checkpoint).expanduser().resolve(strict=False)),
+            "model_sha256": getattr(adapter, "checkpoint_sha256", sam_model_info.get("sam_model_sha256")),
+            "model_type": getattr(adapter, "checkpoint_type", sam_model_info.get("sam_model_type")),
+            "cache_hit": getattr(adapter, "cache_hit", False),
+            "load_timestamp": getattr(adapter, "loaded_at", datetime.now().isoformat()),
+            "inference_parameters": {
+                "prompt": prompt,
+                "score_threshold": score_threshold,
+                "processor_confidence_threshold": confidence_threshold,
+                "dtype_mode": dtype_mode,
+                "requested_device": device,
+                "actual_device": adapter.device,
+                "nms_iou_thresh": nms_iou_thresh,
+                "nms_metric": nms_metric,
+                "nms_mode": nms_mode,
+                "min_area": min_area,
+                "category_name": category_name,
+            },
+            "prompt": prompt,
+            "threshold": score_threshold,
+            "nms_settings": {
+                "iou_thresh": nms_iou_thresh,
+                "metric": nms_metric,
+                "mode": nms_mode,
+                "min_area": min_area,
+            },
+            "generation_timestamp": datetime.now().isoformat(),
+        }
+    )
+    write_json(paths.root / "sam_model_provenance.json", sam_model_info)
+    logger.info(
+        "Loaded SAM model path=%s sha256=%s type=%s cache_hit=%s",
+        sam_model_info.get("resolved_model_path"),
+        sam_model_info.get("model_sha256"),
+        sam_model_info.get("model_type"),
+        sam_model_info.get("cache_hit"),
+    )
     run_config = {
         "run_id": paths.run_id,
         "created_at": datetime.now().isoformat(),
@@ -262,6 +303,7 @@ def run_sam3_image_directory(
         "input_dir": str(input_dir),
         "output_dir": str(paths.root),
         "sam3_checkpoint": str(checkpoint),
+        "sam_model": sam_model_info,
         "sam3_model_config": "build_sam3_image_model",
         "prompt": prompt,
         "inference_threshold": score_threshold,
@@ -360,6 +402,7 @@ def run_sam3_image_directory(
         "visualization_seconds": sum(row.get("timings", {}).get("visualization_seconds", 0.0) for row in manifest),
         "cvat_export_seconds": finalize_timings["cvat_export_seconds"],
         "total_run_seconds": total_run_seconds,
+        "sam_model": sam_model_info,
     }
     write_json(paths.root / "run_summary.json", run_summary)
     run_config["timings"] = run_summary
