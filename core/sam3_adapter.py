@@ -75,6 +75,46 @@ class Sam3Adapter:
         self.dtype_mode = dtype_mode
         self.autocast_dtype = self._decide_dtype(dtype_mode)
 
+    @classmethod
+    def from_model(
+        cls,
+        model,
+        sam3_root: Path = SAM301_ROOT,
+        confidence_threshold: float = 0.05,
+        dtype_mode: str = "bf16",
+        device: str = "cuda",
+        checkpoint_label: str = "<preloaded model>",
+    ) -> "Sam3Adapter":
+        """Wrap an already-built/loaded model in the adapter (checkpoint evaluation).
+
+        Skips the constructor's checkpoint identification/loading entirely — the
+        caller is responsible for having loaded weights correctly (e.g. via
+        core.checkpoint_export.load_trainer_checkpoint_model, which strict-loads).
+        Everything downstream (processor, prompt, thresholds, mask post-processing)
+        is identical to the normal construction path, which is exactly what a fair
+        checkpoint comparison requires.
+        """
+        adapter = cls.__new__(cls)
+        adapter.checkpoint = Path(checkpoint_label)
+        adapter.checkpoint_metadata = None
+        adapter.sam3_root = sam3_root.expanduser().resolve(strict=False)
+        if str(adapter.sam3_root) not in sys.path:
+            sys.path.insert(0, str(adapter.sam3_root))
+        from sam3.model.sam3_image_processor import Sam3Processor
+
+        if device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested for SAM3 inference, but torch.cuda.is_available() is False")
+        if device not in {"cuda", "cpu"}:
+            raise ValueError(f"Unsupported device: {device}")
+        adapter.device = device
+        adapter.model = model.to(device)
+        adapter.model.eval()
+        adapter.processor = Sam3Processor(adapter.model)
+        adapter.processor.set_confidence_threshold(confidence_threshold)
+        adapter.dtype_mode = dtype_mode
+        adapter.autocast_dtype = adapter._decide_dtype(dtype_mode)
+        return adapter
+
     def _decide_dtype(self, dtype_mode: str) -> torch.dtype | None:
         if self.device != "cuda":
             return None

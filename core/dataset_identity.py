@@ -131,6 +131,48 @@ def resolve_dataset_identity(
     return _unknown_identity()
 
 
+def resolve_validation_identity(
+    val_annotations: str | Path | None,
+    registry_path: Path | None = None,
+) -> DatasetIdentity:
+    """Match a VALIDATION annotation path against the registry (for checkpoint
+    evaluation). Same rules as resolve_dataset_identity: resolved-path match only,
+    never filename guessing; unmatched -> fail-safe unknown identity."""
+    if not val_annotations:
+        return _unknown_identity("no val_annotations path was provided")
+    val_resolved = Path(val_annotations).expanduser().resolve(strict=False)
+    registry = load_registry(registry_path)
+    for entry in registry.get("datasets", []):
+        registry_val = _resolved(entry.get("splits", {}).get("val", {}).get("annotations_path"))
+        if registry_val is None or registry_val != val_resolved:
+            continue
+        return DatasetIdentity(
+            dataset_id=entry.get("dataset_id"),
+            matched=True,
+            annotation_source=entry.get("annotation_source", "unknown"),
+            human_reviewed=bool(entry.get("human_reviewed", False)),
+            independently_corrected_gt=bool(entry.get("independently_corrected_gt", False)),
+            allowed_for_formal_training=bool(entry.get("allowed_for_formal_training", False)),
+            allowed_for_model_evaluation=bool(entry.get("allowed_for_model_evaluation", False)),
+            max_epochs_without_human_review=int(entry.get("max_epochs_without_human_review", 1)),
+            warning=(
+                None
+                if entry.get("human_reviewed")
+                else (
+                    f"validation annotations belong to dataset {entry.get('dataset_id')!r} "
+                    "which is NOT human-reviewed; checkpoint selection on it would be "
+                    "self-referential and is refused."
+                )
+            ),
+        )
+    return _unknown_identity(
+        "no dataset identity record matched this validation annotation path; "
+        "register the dataset in data_manifests/dataset_identity_registry.json "
+        "(with human_reviewed=true after manual correction) before using it to "
+        "select checkpoints"
+    )
+
+
 TRAINING_MODE_SMOKE = "smoke"
 TRAINING_MODE_FORMAL = "formal"
 VALID_TRAINING_MODES = (TRAINING_MODE_SMOKE, TRAINING_MODE_FORMAL)

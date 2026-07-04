@@ -483,3 +483,47 @@ def load_inference_checkpoint(
     if loaded_params == 0:
         raise RuntimeError("strict load succeeded but zero parameters were present — refusing silent zero-load")
     return model, obj["metadata"]
+
+
+def load_trainer_checkpoint_model(
+    path: str | Path,
+    device: str = "cpu",
+    sam301_root: Path = SAM301_ROOT,
+):
+    """Load a TRAINER checkpoint's model weights into a FRESH inference model, strictly.
+
+    For checkpoint evaluation only: unlike the inference entry point (which requires
+    an exported inference checkpoint so downstream consumers never touch resume
+    state), evaluation legitimately iterates over raw trainer checkpoints in a run
+    directory. The identity key mapping is verified empirically (see module
+    docstring): the trainer's ckpt["model"] keyset equals a fresh
+    build_sam3_image_model state_dict exactly, so strict=True either fully succeeds
+    or raises — no silent partial load is possible.
+
+    Returns (model, info) where info records epoch and tensor/parameter counts.
+    """
+    identity = identify_checkpoint(path)
+    if identity.type != CHECKPOINT_TYPE_TRAINER:
+        raise ValueError(
+            f"load_trainer_checkpoint_model expects a TRAINER checkpoint, got type={identity.type!r} "
+            f"for {path} (error={identity.error!r})"
+        )
+    obj = _raw_load(path)
+    state_dict = obj["model"]
+    model = _fresh_model(device=device, sam301_root=sam301_root)
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"strict load of trainer checkpoint {path} into a fresh model failed "
+            f"(architecture drift between trainer and inference model?): {exc}"
+        ) from exc
+    loaded_params = sum(t.numel() for t in state_dict.values() if torch.is_tensor(t))
+    if loaded_params == 0:
+        raise RuntimeError("trainer checkpoint contained zero parameters — refusing silent zero-load")
+    info = {
+        "epoch": obj.get("epoch"),
+        "n_tensors": len(state_dict),
+        "n_parameters": loaded_params,
+    }
+    return model, info

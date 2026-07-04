@@ -1,0 +1,16 @@
+# Checkpoint evaluation defaults (see docs/CHECKPOINT_EVALUATION_CN.md).
+# Values here are the shared fixed inference conditions applied to EVERY checkpoint;
+# per-run overrides go through scripts/evaluate_sam3_checkpoints.py flags.
+
+prompt: book spine
+score_threshold: 0.3
+confidence_threshold: 0.05
+min_area: 200
+dtype_mode: bf16
+boundary_tolerance_px: 2
+include_baseline: true
+
+# Stage 1: manual trigger only. When flipped to true, a successful formal training
+# whose validation guard passes may auto-run evaluation (hook not yet wired; the
+# evaluator reads this flag via core.checkpoint_evaluation.evaluator.load_defaults).
+auto_evaluate_after_training: false
