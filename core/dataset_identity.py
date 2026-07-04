@@ -173,6 +173,50 @@ def resolve_validation_identity(
     )
 
 
+def resolve_split_identity(
+    split: str,
+    annotations: str | Path | None,
+    registry_path: Path | None = None,
+) -> DatasetIdentity:
+    """Match any registered split by resolved annotation path.
+
+    Validation still has its dedicated helper because checkpoint selection has
+    stricter wording, but checkpoint diagnostics also need to identify a held-out
+    test split without guessing from filenames or directory names.
+    """
+    if not annotations:
+        return _unknown_identity(f"no {split}_annotations path was provided")
+    resolved = Path(annotations).expanduser().resolve(strict=False)
+    registry = load_registry(registry_path)
+    for entry in registry.get("datasets", []):
+        registry_split = _resolved(entry.get("splits", {}).get(split, {}).get("annotations_path"))
+        if registry_split is None or registry_split != resolved:
+            continue
+        return DatasetIdentity(
+            dataset_id=entry.get("dataset_id"),
+            matched=True,
+            annotation_source=entry.get("annotation_source", "unknown"),
+            human_reviewed=bool(entry.get("human_reviewed", False)),
+            independently_corrected_gt=bool(entry.get("independently_corrected_gt", False)),
+            allowed_for_formal_training=bool(entry.get("allowed_for_formal_training", False)),
+            allowed_for_model_evaluation=bool(entry.get("allowed_for_model_evaluation", False)),
+            max_epochs_without_human_review=int(entry.get("max_epochs_without_human_review", 1)),
+            warning=(
+                None
+                if entry.get("human_reviewed")
+                else (
+                    f"{split} annotations belong to dataset {entry.get('dataset_id')!r} "
+                    "which is NOT human-reviewed; checkpoint diagnostics on it are refused."
+                )
+            ),
+        )
+    return _unknown_identity(
+        f"no dataset identity record matched this {split} annotation path; "
+        "register the split in data_manifests/dataset_identity_registry.json before "
+        "using it for checkpoint evaluation"
+    )
+
+
 TRAINING_MODE_SMOKE = "smoke"
 TRAINING_MODE_FORMAL = "formal"
 VALID_TRAINING_MODES = (TRAINING_MODE_SMOKE, TRAINING_MODE_FORMAL)

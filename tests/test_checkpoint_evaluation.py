@@ -21,6 +21,7 @@ from core.checkpoint_evaluation.metrics import (  # noqa: E402
     compute_image_metrics,
 )
 from core.checkpoint_evaluation.selector import select_best  # noqa: E402
+from core.npz_io import InstanceSet  # noqa: E402
 
 
 def _rect(h, w, y0, y1, x0, x1):
@@ -335,6 +336,122 @@ class CheckpointDiscoveryTest(unittest.TestCase):
         latest = candidates[-1]
         self.assertEqual(latest.name, "checkpoint.pt")
         self.assertIsNone(latest.alias_of)
+
+
+class SplitEvaluationArtifactTest(unittest.TestCase):
+    def test_cache_key_is_split_specific(self) -> None:
+        from core.checkpoint_evaluation.checkpoint_loader import CheckpointCandidate
+        from core.checkpoint_evaluation.evaluator import _cache_key
+
+        candidate = CheckpointCandidate(
+            name="checkpoint_5.pt", path=Path("/x/checkpoint_5.pt"), epoch=5,
+            sha256="abc", size_bytes=10,
+        )
+        val_key = _cache_key("validation", candidate, "dataset", "images", "config", "sam3")
+        test_key = _cache_key("test", candidate, "dataset", "images", "config", "sam3")
+        self.assertNotEqual(val_key, test_key)
+
+    def test_test_metrics_do_not_change_validation_selector(self) -> None:
+        validation_rows = [
+            _candidate("checkpoint_5.pt", 5, 0.80, bf1=0.80),
+            _candidate("checkpoint_20.pt", 20, 0.90, bf1=0.80),
+        ]
+        test_rows = [
+            _candidate("checkpoint_5.pt", 5, 0.99, bf1=0.99),
+            _candidate("checkpoint_20.pt", 20, 0.10, bf1=0.10),
+        ]
+        self.assertEqual(select_best(validation_rows)["best"]["checkpoint_name"], "checkpoint_20.pt")
+        self.assertEqual(select_best(test_rows)["best"]["checkpoint_name"], "checkpoint_5.pt")
+        # The production flow calls select_best only on validation rows; this
+        # assertion documents the intended separation.
+        self.assertNotEqual(
+            select_best(validation_rows)["best"]["checkpoint_name"],
+            select_best(test_rows)["best"]["checkpoint_name"],
+        )
+
+    def test_raw_prediction_npz_can_recompute_iou(self) -> None:
+        from core.checkpoint_evaluation.artifacts import load_raw_prediction_masks, write_raw_predictions
+        from core.checkpoint_evaluation.dataset_loader import ImageGroundTruth
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "img.png"
+            image_path.write_bytes(b"placeholder")
+            gt = ImageGroundTruth(
+                image_id=1,
+                file_name="img.png",
+                path=image_path,
+                width=20,
+                height=20,
+                masks=[_rect(20, 20, 2, 10, 2, 10)],
+                annotation_ids=[101],
+            )
+            pred = _rect(20, 20, 2, 10, 2, 10)
+            instances = InstanceSet(
+                masks=np.stack([pred]),
+                scores=np.array([0.9], dtype=np.float32),
+                bboxes=np.array([[2, 2, 8, 8]], dtype=np.int32),
+                instance_ids=np.array([1], dtype=np.int32),
+                extra={},
+            )
+            npz_path, _meta = write_raw_predictions(
+                Path(tmp), "validation", "checkpoint_5", gt, instances, {"prompt": "book spine"}, 0.01
+            )
+            loaded = load_raw_prediction_masks(npz_path)
+            self.assertAlmostEqual(iou_matrix(gt.masks, loaded)[0, 0], 1.0)
+
+    def test_per_instance_rows_include_unmatched_gt_and_prediction(self) -> None:
+        from core.checkpoint_evaluation.artifacts import build_instance_rows
+        from core.checkpoint_evaluation.dataset_loader import ImageGroundTruth
+
+        gt = ImageGroundTruth(
+            image_id=1,
+            file_name="img.png",
+            path=Path("/tmp/img.png"),
+            width=30,
+            height=30,
+            masks=[_rect(30, 30, 0, 5, 0, 5), _rect(30, 30, 10, 15, 10, 15)],
+            annotation_ids=[1, 2],
+        )
+        preds = [_rect(30, 30, 20, 25, 20, 25)]
+        match = match_instances(gt.masks, preds)
+        rows = build_instance_rows("validation", "checkpoint_5.pt", gt, preds, match, 0.5)
+        self.assertTrue(any(row["miss"] is True and row["gt_instance_id"] == 1 for row in rows))
+        self.assertTrue(any(row["false_positive"] is True and row["pred_instance_id"] == 1 for row in rows))
+
+    def test_match_record_serializes_iou_matrix_and_assignment(self) -> None:
+        from core.checkpoint_evaluation.artifacts import write_match_record
+        from core.checkpoint_evaluation.dataset_loader import ImageGroundTruth
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gt = ImageGroundTruth(
+                image_id=1,
+                file_name="img.png",
+                path=Path(tmp) / "img.png",
+                width=20,
+                height=20,
+                masks=[_rect(20, 20, 1, 6, 1, 6)],
+                annotation_ids=[1],
+            )
+            preds = [_rect(20, 20, 1, 6, 1, 6)]
+            match = match_instances(gt.masks, preds)
+            raw = Path(tmp) / "pred.npz"
+            raw.write_bytes(b"x")
+            path = write_match_record(Path(tmp), "validation", "checkpoint_5", "checkpoint_5.pt", gt, preds, match, raw)
+            data = json.loads(path.read_text())
+            self.assertEqual(data["iou_matrix"], [[1.0]])
+            self.assertEqual(data["accepted_matches"][0]["gt_index"], 0)
+
+    def test_registered_test_split_identity_is_diagnostic_only(self) -> None:
+        from core.dataset_identity import resolve_split_identity
+        from core.config import BOOK_ROOT
+
+        test_ann = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "test" / "annotations.json"
+        if not test_ann.exists():
+            self.skipTest("registered diagnostic test split not present")
+        identity = resolve_split_identity("test", test_ann)
+        self.assertTrue(identity.matched)
+        self.assertTrue(identity.human_reviewed)
+        self.assertFalse(identity.allowed_for_model_evaluation)
 
 
 if __name__ == "__main__":

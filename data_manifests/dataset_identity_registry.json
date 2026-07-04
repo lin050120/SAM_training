@@ -57,37 +57,70 @@
       "annotation_source_evidence": "Train and val annotations started from SAM3 pre-annotations; all train/val images and all instances were manually checked and corrected. No independent test split is registered, so model-evaluation approval remains false.",
       "human_reviewed": true,
       "independently_corrected_gt": true,
-      "intended_use": "formal_training_and_validation",
+      "intended_use": "formal_training_validation_and_diagnostic_test",
       "allowed_for_formal_training": true,
       "allowed_for_model_evaluation": false,
       "max_epochs_without_human_review": 1,
       "dataset_manifest_path": "data_manifests/book_spine_human_corrected_v1_dataset_manifest.json",
-      "dataset_manifest_sha256": "c295b3b1c223508490b5096e40dc86133dada15647a3c7378fb9d7a501719371",
+      "dataset_manifest_sha256": "0bf3fa9a1ec70afd1056c58010643724042bf90fc465bfab2a4f5d91c2923a02",
       "split_manifest_path": "data_manifests/book_spine_human_corrected_v1_split_manifest.json",
-      "split_manifest_sha256": "451084678b181bcc7f79ced2f0078db6c084cd6c95022e0e3d5756a82b38494e",
-      "source_coco_file_count": 2,
-      "image_file_count": 52,
-      "unique_image_count": 52,
-      "annotation_count": 1012,
+      "split_manifest_sha256": "da562b1cc0492a3a030dea2ca55769847521949db646348fa9d058f439606009",
+      "source_coco_file_count": 3,
+      "image_file_count": 64,
+      "unique_image_count": 64,
+      "annotation_count": 1241,
       "exact_duplicate_group_count": 0,
       "splits": {
         "train": {
+          "images_dir": "data/book_spine_sam3_dataset/train/images",
           "annotations_path": "data/book_spine_sam3_dataset/train/annotations.json",
-          "file_count": 44,
+          "annotations_sha256": "dc1ff7eb90dc3bc435e7f24cd7834be6ae5849f42259bcb53f19dc9404db0eeb",
+          "image_count": 44,
           "unique_image_count": 44,
-          "annotation_count": 857
+          "annotation_count": 857,
+          "categories": [
+            {
+              "id": 1,
+              "name": "book spine",
+              "supercategory": ""
+            }
+          ]
         },
         "val": {
+          "images_dir": "data/book_spine_sam3_dataset/val/images",
           "annotations_path": "data/book_spine_sam3_dataset/val/annotations.json",
-          "file_count": 8,
+          "annotations_sha256": "eaf76ce4ce03a7a8b21aed8b403d862e436bdc8ed20913c36734af8f04a1eae3",
+          "image_count": 8,
           "unique_image_count": 8,
-          "annotation_count": 155
+          "annotation_count": 155,
+          "categories": [
+            {
+              "id": 1,
+              "name": "book spine",
+              "supercategory": ""
+            }
+          ]
+        },
+        "test": {
+          "images_dir": "data/book_spine_sam3_dataset/test/images",
+          "annotations_path": "data/book_spine_sam3_dataset/test/annotations.json",
+          "annotations_sha256": "f7bc0ca6af4148ccf3d9c4f08a2a59203ad1406a9c660687b9cf97e8ae5886d9",
+          "image_count": 12,
+          "unique_image_count": 12,
+          "annotation_count": 229,
+          "categories": [
+            {
+              "id": 1,
+              "name": "book spine",
+              "supercategory": ""
+            }
+          ]
         }
       },
       "basis_and_review_reports": [
         "docs/USER_GUIDE_ZH_CN.md"
       ],
-      "evaluation_limitation": "No independent test split is registered; allowed_for_model_evaluation remains false until a held-out reviewed test set is added."
+      "evaluation_limitation": "Test split is registered for diagnostic checkpoint comparison only. Because all checkpoints are displayed on test, allowed_for_model_evaluation remains false and test metrics must not be used for model selection or final blind-test claims."
     }
   ]
 }

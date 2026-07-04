@@ -26,6 +26,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-dir", required=True, help="training run directory")
     parser.add_argument("--val-annotations", default=None, help="override validation COCO annotations path")
     parser.add_argument("--val-images", default=None, help="override validation images directory")
+    parser.add_argument("--test-annotations", default=None, help="override diagnostic test COCO annotations path")
+    parser.add_argument("--test-images", default=None, help="override diagnostic test images directory")
+    parser.add_argument(
+        "--split",
+        choices=["validation", "test", "all"],
+        default="all",
+        help="evaluation flow to run; all means validation selection first, then diagnostic test",
+    )
     parser.add_argument("--checkpoints", nargs="*", default=None, help="only evaluate these checkpoint file names")
     parser.add_argument("--prompt", default=None)
     parser.add_argument("--score-threshold", type=float, default=None)
@@ -49,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         overrides["val_annotations"] = Path(args.val_annotations)
     if args.val_images:
         overrides["val_images"] = Path(args.val_images)
+    if args.test_annotations:
+        overrides["test_annotations"] = Path(args.test_annotations)
+    if args.test_images:
+        overrides["test_images"] = Path(args.test_images)
     if args.checkpoints:
         overrides["checkpoint_names"] = list(args.checkpoints)
     if args.prompt is not None:
@@ -69,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     overrides["export_best"] = bool(args.export_best)
     overrides["force"] = bool(args.force)
     overrides["smoke"] = bool(args.smoke)
+    overrides["split"] = args.split
     if args.max_images is not None:
         overrides["max_images"] = args.max_images
         overrides["smoke"] = True  # a truncated validation set is never an official ranking
@@ -94,7 +107,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"mean_iou_all_gt={best['mean_iou_all_gt']}"
             )
             print(f"improved over baseline: {summary.get('finetuned_improved_over_baseline')}")
-        print(f"details: {summary.get('files', {}).get('checkpoint_metrics_csv')}")
+        if summary.get("test"):
+            print(f"test status: {summary['test'].get('status')} (diagnostic only)")
+        files = summary.get("files", {})
+        print(f"validation details: {files.get('validation_summary_json')}")
+        print(f"test details: {files.get('test_summary_json')}")
     if summary["status"] in {"blocked", "failed"}:
         return 1
     return 0

@@ -10,10 +10,13 @@ from pathlib import Path
 from typing import Any
 
 CHECKPOINT_CSV_COLUMNS = [
+    "split",
     "checkpoint_name",
     "checkpoint_path",
     "epoch",
     "sha256",
+    "size_bytes",
+    "checkpoint_type",
     "is_baseline",
     "evaluation_status",
     "mean_iou_all_gt",
@@ -46,7 +49,9 @@ CHECKPOINT_CSV_COLUMNS = [
 ]
 
 PER_IMAGE_CSV_COLUMNS = [
+    "split",
     "checkpoint_name",
+    "image_id",
     "image_name",
     "gt_count",
     "prediction_count",
@@ -54,6 +59,8 @@ PER_IMAGE_CSV_COLUMNS = [
     "false_positive_count",
     "mean_iou_all_gt",
     "mean_boundary_f1_all_gt",
+    "raw_prediction_path",
+    "match_record_path",
     "error",
 ]
 

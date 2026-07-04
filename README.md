@@ -68,18 +68,19 @@ conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py \
   --output <run_dir>/checkpoints/inference_model.pt
 ```
 
-## Checkpoint Evaluation (Best-Checkpoint Selection)
+## Checkpoint Evaluation (Validation Selection + Diagnostic Test)
 
-After training, rank every `checkpoint_N.pt` on the registered human-corrected
-validation split with mask-level metrics (mean IoU over ALL GT with misses counted
-as 0, boundary F1, miss rate, FP/image, area ratio — never bbox AP) and select the
-best by explicit hierarchical rules. The original `sam3.pt` is evaluated as a
-separate baseline. Refuses to run against unregistered or machine-pre-annotation
-validation data. UI: "Checkpoint 评估" tab. Docs: `docs/CHECKPOINT_EVALUATION_CN.md`.
+After training, evaluate every unique `checkpoint_N.pt` plus the original
+`sam3.pt` baseline on validation first, select the best checkpoint from validation
+only, then evaluate the same checkpoints on test as diagnostic-only evidence. Test
+metrics never change `best_checkpoint.json` or `inference_best.pt`. The evaluator
+saves raw prediction masks, match records, per-instance metrics, GT snapshots, and
+visualizations under `<run_dir>/evaluation/{validation,test}/`. UI: "Checkpoint
+评估" tab. Docs: `docs/CHECKPOINT_EVALUATION_CN.md`.
 
 ```bash
 conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \
-  --run-dir /home/book/book01/runs/training/<run_id> --export-best
+  --run-dir /home/book/book01/runs/training/<run_id> --split all --export-best
 ```
 
 ## Authoritative SAM3 Training Config

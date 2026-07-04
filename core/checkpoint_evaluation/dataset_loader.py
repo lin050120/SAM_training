@@ -85,9 +85,9 @@ def check_validation_guard(
     if not identity.allowed_for_model_evaluation:
         warnings.append(
             f"dataset {identity.dataset_id!r} has allowed_for_model_evaluation=false "
-            "(no independent held-out test split registered): this ranking is valid for "
-            "checkpoint SELECTION on the validation split, but must not be quoted as "
-            "final model quality."
+            "(not approved as a final blind model-evaluation dataset): this ranking is "
+            "valid for checkpoint SELECTION on the validation split, but must not be "
+            "quoted as final model quality."
         )
     return ValidationGuardResult(ok=True, reason=None, warnings=warnings, identity=identity.to_dict())
 

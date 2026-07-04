@@ -6,10 +6,10 @@
   "annotation_source": "sam3_preannotation_then_human_corrected",
   "human_reviewed": true,
   "independently_corrected_gt": true,
-  "intended_use": "formal_training_and_validation",
+  "intended_use": "formal_training_validation_and_diagnostic_test",
   "allowed_for_formal_training": true,
   "allowed_for_model_evaluation": false,
-  "review_note": "Train and val images and instances were manually checked and corrected from SAM3 pre-annotations. No independent test split is registered, so this dataset is not approved for final model evaluation.",
+  "review_note": "Train, val, and test images are part of the human-corrected book spine dataset. Test is registered for diagnostic checkpoint comparison only; allowed_for_model_evaluation remains false because the current workflow displays all checkpoints on test and it is not a final blind evaluation set.",
   "splits": {
     "train": {
       "images_dir": "data/book_spine_sam3_dataset/train/images",
@@ -460,9 +460,122 @@
           "image_id": 8
         }
       ]
+    },
+    "test": {
+      "images_dir": "data/book_spine_sam3_dataset/test/images",
+      "annotations_path": "data/book_spine_sam3_dataset/test/annotations.json",
+      "annotations_sha256": "f7bc0ca6af4148ccf3d9c4f08a2a59203ad1406a9c660687b9cf97e8ae5886d9",
+      "image_count": 12,
+      "unique_image_count": 12,
+      "annotation_count": 229,
+      "categories": [
+        {
+          "id": 1,
+          "name": "book spine",
+          "supercategory": ""
+        }
+      ],
+      "images": [
+        {
+          "file_name": "im_000001.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000001.png",
+          "sha256": "f09b8afb497ccd432985960684e378fab193685859903d90aa81e05abfce8a7b",
+          "width": 1280,
+          "height": 720,
+          "image_id": 1
+        },
+        {
+          "file_name": "im_000002.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000002.png",
+          "sha256": "a073e86d808fa9ce82c76030d22f0a3f619fc5acb6bd5dd934e5cf144994e6a1",
+          "width": 1280,
+          "height": 720,
+          "image_id": 2
+        },
+        {
+          "file_name": "im_000003.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000003.png",
+          "sha256": "3ec01ed1c88bce23007bd9a140422ce58a97ef0950ddb0b61f630d7f31ba9afe",
+          "width": 1280,
+          "height": 720,
+          "image_id": 3
+        },
+        {
+          "file_name": "im_000004.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000004.png",
+          "sha256": "bd60f40fdb6aae8db71a1447e4ff9d8229396e8a67a59bd5a259373766dad738",
+          "width": 1280,
+          "height": 720,
+          "image_id": 4
+        },
+        {
+          "file_name": "im_000005.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000005.png",
+          "sha256": "62603c4a8bb26745c16adde876fa429f57d021bd850153e0ef4f2f6478712de4",
+          "width": 1280,
+          "height": 720,
+          "image_id": 5
+        },
+        {
+          "file_name": "im_000006.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000006.png",
+          "sha256": "ef0854ed0437c8220e2f9950396a9514334dc2d65694881f6493e9be4f68576d",
+          "width": 1280,
+          "height": 720,
+          "image_id": 6
+        },
+        {
+          "file_name": "im_000007.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000007.png",
+          "sha256": "9b89d0a40bc0a22cd72f18ef5bbe419656b768054af36f2e47c9df5cdccb8838",
+          "width": 1280,
+          "height": 720,
+          "image_id": 7
+        },
+        {
+          "file_name": "im_000008.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000008.png",
+          "sha256": "16423cce8d5abf3ea983ba9ad488d397bdd99d12ace741af24507e0c631e7cff",
+          "width": 1280,
+          "height": 720,
+          "image_id": 8
+        },
+        {
+          "file_name": "im_000009.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000009.png",
+          "sha256": "4ff59daa7b8655204161dc1d7197685fde3a3cce68e978faab767da1ccdf2917",
+          "width": 1280,
+          "height": 720,
+          "image_id": 9
+        },
+        {
+          "file_name": "im_000010.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000010.png",
+          "sha256": "3b5f1e0a963991470dd0093d2a96438b8bf0d9d474ac76db6fca2f3f214722e3",
+          "width": 1280,
+          "height": 720,
+          "image_id": 10
+        },
+        {
+          "file_name": "im_000011.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000011.png",
+          "sha256": "ca6c975ca3d2bafac61f5088c09980ad1caa71ce4d6e5fb2a357b85aad19bb38",
+          "width": 1280,
+          "height": 720,
+          "image_id": 11
+        },
+        {
+          "file_name": "im_000012.png",
+          "path": "data/book_spine_sam3_dataset/test/images/im_000012.png",
+          "sha256": "0545ad484562573178fa06be45d94c935ad2a0483f8db727704fadbbd74fed0f",
+          "width": 1280,
+          "height": 720,
+          "image_id": 12
+        }
+      ]
     }
   },
-  "total_image_file_count": 52,
-  "total_unique_image_count": 52,
-  "total_annotation_count": 1012
+  "total_image_file_count": 64,
+  "total_unique_image_count": 64,
+  "total_annotation_count": 1241
 }

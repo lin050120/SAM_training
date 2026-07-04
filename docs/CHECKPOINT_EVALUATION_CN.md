@@ -19,8 +19,8 @@
 ## 4. validation 与 test 的区别
 
 - **validation（验证集）**：用来做训练中决策——选最佳 checkpoint、调阈值。可以反复使用。
-- **test（测试集）**：只在最终报告模型质量时用一次，绝不参与任何选择。
-- 当前登记的 `book_spine_human_corrected_v1` 只有 train(44)/val(8) 两个 split，`allowed_for_model_evaluation=false`——**评估器允许用它的 val 选 checkpoint，但排名数字不能当作最终模型质量结论**（评估报告会自动带上这条警告）。补充独立人工修正 test split 后才可解除。
+- **test（测试集）**：当前用于 diagnostic-only 对照。完整流程会在 validation 选定 best 后，继续把 baseline 和所有 checkpoint 放到 test 上评价，但 **test 结果绝不改变 best checkpoint**。
+- 当前登记的 `book_spine_human_corrected_v1` 含 train(44)/val(8)/test(12)，`allowed_for_model_evaluation=false`。原因是本工具会展示所有 checkpoint 的 test 指标，因此该 test 后续不应再被视为完全未查看的最终盲测集。它可用于人工核实和诊断，不能作为最终模型质量结论。
 
 ## 5. 验证集守卫（为什么会拒绝评价）
 
@@ -33,7 +33,17 @@
 
 ## 6. 评价流程与固定条件
 
-所有 checkpoint 使用**完全相同**的条件（写入 `evaluation/evaluation_config.yaml`）：验证图片与 GT、prompt（默认取该 run 的 `resolved_training_prompt`，即 `book spine`）、score/confidence 阈值、min_area、dtype（bf16）、device、mask 后处理（统一走 `core.sam3_adapter.Sam3Adapter.predict`）、SAM3 源码 hash、评估器版本。trainer checkpoint 通过 `core.checkpoint_export.load_trainer_checkpoint_model` **strict=True** 加载进全新模型（零静默丢权重）。
+所有 checkpoint 使用**完全相同**的条件（写入 `evaluation/evaluation_config.yaml`）：图片与 GT、prompt（默认取该 run 的 `resolved_training_prompt`，即 `book spine`）、score/confidence 阈值、min_area、dtype（bf16）、device、mask 后处理（统一走 `core.sam3_adapter.Sam3Adapter.predict`）、SAM3 源码 hash、评估器版本。trainer checkpoint 通过 `core.checkpoint_export.load_trainer_checkpoint_model` **strict=True** 加载进全新模型（零静默丢权重）。
+
+默认完整流程：
+
+1. 检查 validation 身份与路径；
+2. 对 baseline、`checkpoint_5/10/15/20` 等唯一 checkpoint 在 validation 上评价；
+3. 只根据 validation 指标运行 selector，写 `best_checkpoint.json`；
+4. 可选导出 `checkpoints/inference_best.pt`；
+5. 检查 test 身份与路径；
+6. 对 baseline 和所有唯一 checkpoint 在 test 上评价；
+7. 写 `test_checkpoint_comparison.json`，字段名为 `test_highest_metric_checkpoint`，并标记 `diagnostic_only=true`。
 
 ### 实例匹配
 
@@ -66,38 +76,57 @@ tie tolerance、规则全文与逐步裁决轨迹写入 `best_checkpoint.json` �
 
 ```
 <run_dir>/evaluation/
-├── evaluation_config.yaml    # 全部固定条件 + 版本/hash + 数据身份
-├── checkpoint_metrics.csv    # 每 checkpoint 一行全指标
-├── checkpoint_metrics.json
-├── per_image_metrics.csv     # 每 checkpoint × 每图
-├── best_checkpoint.json      # 最佳选择 + 规则 + 理由 + baseline 对比
-├── evaluation_summary.json   # 总状态 completed/partial/failed/blocked/cancelled
+├── evaluation_config.yaml
+├── dataset_split_audit.json
+├── dataset_split_audit.csv
+├── best_checkpoint.json      # 只由 validation 选择
+├── test_checkpoint_comparison.json
+├── evaluation_summary.json
 ├── evaluation.log
-└── cache/                    # 结果缓存（见下）
+├── validation/
+│   ├── checkpoint_metrics.csv
+│   ├── checkpoint_metrics.json
+│   ├── per_image_metrics.csv
+│   ├── per_instance_metrics.csv
+│   ├── gt_snapshot.json
+│   ├── human_review_index.csv
+│   ├── failure_cases.csv
+│   ├── raw_predictions/<checkpoint>/*.npz + *.json
+│   ├── match_records/<checkpoint>/*.json
+│   └── visualizations/<checkpoint>/*.png
+├── test/
+│   └── 同 validation，但 test 结果不参与 best selection
+└── cache/
 ```
 
 `training_summary.json` 会追加独立的 `checkpoint_evaluation` 块（原子写入，原字段全保留）。
 
-缓存 key = SHA256(checkpoint SHA256 | 验证集标注文件 SHA256 | 评价配置 SHA256 | 评估器版本 | SAM3 源码 hash)——文件名从不作为缓存依据；GT、配置或 checkpoint 任何一项变化都会重算。`--force` 强制全部重算。
+缓存 key = SHA256(split name | checkpoint SHA256 | 该 split 标注 SHA256 | 该 split 图片 SHA256 聚合 | 评价配置 SHA256 | 评估器版本 | SAM3 源码 hash)。validation/test 缓存物理分开，文件名从不作为缓存依据；GT、配置或 checkpoint 任何一项变化都会重算。`--force` 强制全部重算。
+
+`raw_predictions` 中的 NPZ 保存 mask、score、bbox、instance_id；旁边 JSON 保存图像路径、尺寸、prompt、阈值和推理耗时。`match_records` 保存 IoU matrix、Hungarian assignment、accepted matches、unmatched GT 和 unmatched prediction，可用于重新核算指标。`human_review_index.csv` 默认保留 `review_status` 和 `reviewer_notes` 空列，重评时会尽量保留用户已填写的备注。
 
 ## 10. 如何手动启动评价（命令行）
 
 ```bash
 conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \
-  --run-dir /home/book/book01/runs/training/<run_id>
+  --run-dir /home/book/book01/runs/training/<run_id> \
+  --split all \
+  --export-best
 ```
 
-常用可选项：`--export-best`（同时导出 `checkpoints/inference_best.pt`）、`--force`、`--no-baseline`、`--checkpoints checkpoint_5.pt checkpoint_10.pt`、`--score-threshold/--min-area/--boundary-tolerance/--prompt`（覆盖固定条件——覆盖后对所有 checkpoint 一视同仁）、`--max-images N --smoke`（冒烟；截断验证集自动强制标记 smoke，不作为正式排名）、`--device cpu`。
+常用可选项：`--split validation|test|all`、`--test-annotations/--test-images`、`--export-best`（只导出 validation 选中的 best）、`--force`、`--no-baseline`、`--checkpoints checkpoint_5.pt checkpoint_10.pt`、`--score-threshold/--min-area/--boundary-tolerance/--prompt`（覆盖固定条件——覆盖后对所有 checkpoint 一视同仁）、`--max-images N --smoke`（冒烟；截断验证集自动强制标记 smoke，不作为正式排名）、`--device cpu`。
 
 ## 11. 网页操作
 
 启动 UI（普通终端）：`conda run -n sam301 python /home/book/book01/app.py` → 打开 `Checkpoint 评估` 标签页：
 
 1. 下拉框选择含 checkpoint 的训练 run（自动列出）；
-2. `刷新状态/结果`：显示是否已评价、验证集身份（人工修正与否）、最佳 checkpoint、Mean IoU、是否优于 baseline、排名表（⭐=最佳，🏁=baseline）与 `best_checkpoint.json`；
-3. `评估全部 Checkpoint`：后台子进程运行（服务端单任务守卫，重复点击会被 BLOCKED），日志实时滚动，自动附带 `--export-best`；
-4. `重新评估（忽略缓存）`：`--force`；
-5. `导出最佳推理模型`：把 best trainer checkpoint 导出为 `checkpoints/inference_best.pt`（走既有 export 流程，含 key 覆盖率/与 base 差异校验）。
+2. `刷新状态/结果`：显示是否已评价、validation/test 数据身份、最佳 checkpoint、Mean IoU、是否优于 baseline、validation 表、test 表与 `best_checkpoint.json`；
+3. `依次评价 Validation 和 Test`：后台子进程运行（服务端单任务守卫，重复点击会被 BLOCKED），顺序为 validation → selector → best export → test diagnostic；
+4. `重新评价 Validation 和 Test（忽略缓存）`：`--split all --force`；
+5. `评价 Validation 全部 Checkpoint` / `评价 Test 全部 Checkpoint`：只运行目标 split；
+6. `重新评价 Validation` / `重新评价 Test`：只忽略目标 split 缓存；
+7. `导出最佳推理模型`：把 validation best trainer checkpoint 导出为 `checkpoints/inference_best.pt`（走既有 export 流程，含 key 覆盖率/与 base 差异校验）。
 
 无合法验证集时按钮不会静默成功——评价子进程立即以 `blocked` 结束并在页面显示原因。
 

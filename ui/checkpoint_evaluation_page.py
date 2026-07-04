@@ -54,14 +54,39 @@ def _fmt(value: Any, digits: int = 4) -> str:
     return "—"
 
 
-def load_evaluation_state(run_dir_str: str) -> tuple[str, list[list[Any]], str]:
-    """Returns (status_markdown, ranking_rows, best_json_text)."""
+def _metrics_rows(metrics_path: Path, best_name: str | None, mark_best: bool) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    try:
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        for r in metrics:
+            marker = "⭐ " if (mark_best and r.get("checkpoint_name") == best_name and not r.get("is_baseline")) else ""
+            baseline_marker = "🏁 baseline " if r.get("is_baseline") else ""
+            val_best_marker = "（val selected） " if ((not mark_best) and r.get("checkpoint_name") == best_name and not r.get("is_baseline")) else ""
+            rows.append([
+                f"{marker}{val_best_marker}{baseline_marker}{r.get('checkpoint_name')}",
+                r.get("epoch") if r.get("epoch") is not None else "—",
+                _fmt(r.get("mean_iou_all_gt")),
+                _fmt(r.get("mean_boundary_f1_all_gt")),
+                _fmt(r.get("recall_iou_50")),
+                _fmt(r.get("miss_rate_iou_50")),
+                _fmt(r.get("false_positive_per_image"), 2),
+                _fmt(r.get("mean_area_ratio"), 3),
+                r.get("evaluation_status", "?") + (f": {r['error_message']}" if r.get("error_message") else ""),
+            ])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return rows
+
+
+def load_evaluation_state(run_dir_str: str) -> tuple[str, list[list[Any]], list[list[Any]], str]:
+    """Returns (status_markdown, validation_rows, test_rows, best_json_text)."""
     if not run_dir_str:
-        return "未选择 run。", [], "{}"
+        return "未选择 run。", [], [], "{}"
     run_dir = Path(run_dir_str)
     evaluation_dir = run_dir / "evaluation"
     summary_path = evaluation_dir / "evaluation_summary.json"
-    metrics_path = evaluation_dir / "checkpoint_metrics.json"
+    val_metrics_path = evaluation_dir / "validation" / "checkpoint_metrics.json"
+    test_metrics_path = evaluation_dir / "test" / "checkpoint_metrics.json"
     best_path = evaluation_dir / "best_checkpoint.json"
 
     # dataset identity preview (works even before any evaluation ran)
@@ -80,14 +105,16 @@ def load_evaluation_state(run_dir_str: str) -> tuple[str, list[list[Any]], str]:
         val_note = "验证集: 无法从 runtime_config.yaml 读取"
 
     if not summary_path.is_file():
-        return f"{val_note}\n\n**尚未评价** (evaluation/ 不存在或未完成)。", [], "{}"
+        return f"{val_note}\n\n**尚未评价** (evaluation/ 不存在或未完成)。", [], [], "{}"
 
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return f"{val_note}\n\n评价结果读取失败: {exc}", [], "{}"
+        return f"{val_note}\n\n评价结果读取失败: {exc}", [], [], "{}"
 
     best = summary.get("best") or {}
+    validation = summary.get("validation") or {}
+    test = summary.get("test") or {}
     improved = summary.get("finetuned_improved_over_baseline")
     improved_text = {True: "✅ 是", False: "❌ 否", None: "—(无 baseline 对比)"}[improved]
     smoke_tag = "（SMOKE — 非正式排名）" if summary.get("smoke") else ""
@@ -100,31 +127,28 @@ def load_evaluation_state(run_dir_str: str) -> tuple[str, list[list[Any]], str]:
         f"**优于原始 SAM3**: {improved_text}  \n"
         f"**结果目录**: `{summary.get('run_dir', run_dir_str)}/evaluation/`"
     )
+    status_md += (
+        f"\n\n### Validation\n"
+        f"- 状态: `{validation.get('status', 'unknown')}`\n"
+        f"- 数据: `{validation.get('dataset_path', '—')}`\n"
+        f"- 原始数据: `{validation.get('files', {}).get('raw_predictions_dir', '—')}`\n"
+        f"- 可视化: `{validation.get('files', {}).get('visualizations_dir', '—')}`\n\n"
+        f"### Test（diagnostic only）\n"
+        f"- 状态: `{test.get('status', 'unknown')}`\n"
+        f"- 数据: `{test.get('dataset_path', '—')}`\n"
+        f"- 原始数据: `{test.get('files', {}).get('raw_predictions_dir', '—')}`\n"
+        f"- 可视化: `{test.get('files', {}).get('visualizations_dir', '—')}`\n"
+        f"- ⚠️ best checkpoint 由 validation set 唯一决定。test 结果仅作独立对照和人工核实，"
+        f"不参与模型选择；展示全部 checkpoint 后，该 test 不应再视为完全未查看的最终盲测集。"
+    )
     if summary.get("reason"):
         status_md += f"  \n**原因**: {summary['reason']}"
     for warning in summary.get("guard_warnings", []):
         status_md += f"\n\n⚠️ {warning}"
 
-    rows: list[list[Any]] = []
-    try:
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        best_name = best.get("checkpoint_name")
-        for r in metrics:
-            marker = "⭐ " if (r.get("checkpoint_name") == best_name and not r.get("is_baseline")) else ""
-            baseline_marker = "🏁 baseline " if r.get("is_baseline") else ""
-            rows.append([
-                f"{marker}{baseline_marker}{r.get('checkpoint_name')}",
-                r.get("epoch") if r.get("epoch") is not None else "—",
-                _fmt(r.get("mean_iou_all_gt")),
-                _fmt(r.get("mean_boundary_f1_all_gt")),
-                _fmt(r.get("recall_iou_50")),
-                _fmt(r.get("miss_rate_iou_50")),
-                _fmt(r.get("false_positive_per_image"), 2),
-                _fmt(r.get("mean_area_ratio"), 3),
-                r.get("evaluation_status", "?") + (f": {r['error_message']}" if r.get("error_message") else ""),
-            ])
-    except (OSError, json.JSONDecodeError):
-        pass
+    best_name = best.get("checkpoint_name")
+    val_rows = _metrics_rows(val_metrics_path, best_name, mark_best=True)
+    test_rows = _metrics_rows(test_metrics_path, best_name, mark_best=False)
 
     best_text = "{}"
     if best_path.is_file():
@@ -132,7 +156,7 @@ def load_evaluation_state(run_dir_str: str) -> tuple[str, list[list[Any]], str]:
             best_text = best_path.read_text(encoding="utf-8")
         except OSError:
             pass
-    return status_md, rows, best_text
+    return status_md, val_rows, test_rows, best_text
 
 
 def _run_evaluation(run_dir_str: str, extra_args: list[str]) -> Iterator[tuple[str, str]]:
@@ -167,11 +191,27 @@ def _run_evaluation(run_dir_str: str, extra_args: list[str]) -> Iterator[tuple[s
 
 
 def start_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
-    yield from _run_evaluation(run_dir_str, ["--export-best"])
+    yield from _run_evaluation(run_dir_str, ["--split", "all", "--export-best"])
 
 
 def start_re_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
-    yield from _run_evaluation(run_dir_str, ["--export-best", "--force"])
+    yield from _run_evaluation(run_dir_str, ["--split", "all", "--export-best", "--force"])
+
+
+def start_validation_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
+    yield from _run_evaluation(run_dir_str, ["--split", "validation", "--export-best"])
+
+
+def start_test_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
+    yield from _run_evaluation(run_dir_str, ["--split", "test"])
+
+
+def start_validation_re_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
+    yield from _run_evaluation(run_dir_str, ["--split", "validation", "--export-best", "--force"])
+
+
+def start_test_re_evaluation(run_dir_str: str) -> Iterator[tuple[str, str]]:
+    yield from _run_evaluation(run_dir_str, ["--split", "test", "--force"])
 
 
 def export_best_model(run_dir_str: str) -> str:
@@ -207,11 +247,12 @@ def export_best_model(run_dir_str: str) -> str:
 
 
 def build_checkpoint_evaluation_tab() -> None:
-    gr.Markdown("## Checkpoint 评估：在人工修正验证集上对全部 checkpoint 排名并选择最佳")
+    gr.Markdown("## Checkpoint 评估：Validation 选最佳，Test 仅作诊断对照")
     gr.Markdown(
         "评价指标为 mask 级（Mean IoU / Boundary F1 / 漏检 / 误检 / 面积偏差），"
         "不使用 bbox AP，也不默认最后一个 epoch 最好。验证集必须已在 "
         "`data_manifests/dataset_identity_registry.json` 登记为人工修正 GT，否则评价会被服务端阻止。"
+        "Test 结果不会改变 validation 选出的 best checkpoint。"
         "详见 `docs/CHECKPOINT_EVALUATION_CN.md`。"
     )
     run_dropdown = gr.Dropdown(
@@ -221,27 +262,39 @@ def build_checkpoint_evaluation_tab() -> None:
     )
     with gr.Row():
         refresh_btn = gr.Button("刷新状态/结果")
-        evaluate_btn = gr.Button("评估全部 Checkpoint", variant="primary")
-        re_evaluate_btn = gr.Button("重新评估（忽略缓存）")
+        evaluate_btn = gr.Button("依次评价 Validation 和 Test", variant="primary")
+        re_evaluate_btn = gr.Button("重新评价 Validation 和 Test（忽略缓存）")
         export_btn = gr.Button("导出最佳推理模型")
+    with gr.Row():
+        val_btn = gr.Button("评价 Validation 全部 Checkpoint")
+        val_force_btn = gr.Button("重新评价 Validation")
+        test_btn = gr.Button("评价 Test 全部 Checkpoint")
+        test_force_btn = gr.Button("重新评价 Test")
 
     status_md = gr.Markdown("选择 run 后点击“刷新状态/结果”。")
-    ranking_table = gr.Dataframe(headers=RANKING_HEADERS, value=[], interactive=False, wrap=True)
+    gr.Markdown("### Validation 排名（唯一用于 best selection）")
+    validation_table = gr.Dataframe(headers=RANKING_HEADERS, value=[], interactive=False, wrap=True)
+    gr.Markdown("### Test 结果（diagnostic only，不参与 best selection）")
+    test_table = gr.Dataframe(headers=RANKING_HEADERS, value=[], interactive=False, wrap=True)
     best_json_box = gr.Code(label="best_checkpoint.json", language="json")
     progress_box = gr.Textbox(label="评价进度", interactive=False)
     log_box = gr.Textbox(label="评价日志 (stdout/stderr)", lines=14, interactive=False, autoscroll=True)
 
     def _refresh(run_dir_str: str):
-        status, rows, best_text = load_evaluation_state(run_dir_str)
-        return status, rows, best_text, gr.update(choices=list_runs_with_checkpoints())
+        status, val_rows, test_rows, best_text = load_evaluation_state(run_dir_str)
+        return status, val_rows, test_rows, best_text, gr.update(choices=list_runs_with_checkpoints())
 
     refresh_btn.click(
-        fn=_refresh, inputs=[run_dropdown], outputs=[status_md, ranking_table, best_json_box, run_dropdown]
+        fn=_refresh, inputs=[run_dropdown], outputs=[status_md, validation_table, test_table, best_json_box, run_dropdown]
     )
     run_dropdown.change(
         fn=lambda r: load_evaluation_state(r), inputs=[run_dropdown],
-        outputs=[status_md, ranking_table, best_json_box],
+        outputs=[status_md, validation_table, test_table, best_json_box],
     )
     evaluate_btn.click(fn=start_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
     re_evaluate_btn.click(fn=start_re_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
+    val_btn.click(fn=start_validation_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
+    val_force_btn.click(fn=start_validation_re_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
+    test_btn.click(fn=start_test_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
+    test_force_btn.click(fn=start_test_re_evaluation, inputs=[run_dropdown], outputs=[progress_box, log_box])
     export_btn.click(fn=export_best_model, inputs=[run_dropdown], outputs=[progress_box])
