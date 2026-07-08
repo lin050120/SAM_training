@@ -130,11 +130,34 @@ def _default_test_paths(train_annotations: Path | None) -> tuple[Path | None, Pa
     return None, None
 
 
+def _split_images_dir_from_annotations(annotations: Path, split_names: set[str]) -> Path | None:
+    """Return the canonical sibling images dir for a COCO split, when present."""
+    annotations = Path(annotations).expanduser().resolve(strict=False)
+    split_dir = annotations.parent
+    if split_dir.name.lower() not in split_names:
+        return None
+    images_dir = split_dir / "images"
+    return images_dir if images_dir.is_dir() else None
+
+
+def _resolve_default_validation_images(val_annotations: Path, configured_val_images: Path) -> Path:
+    """Use the validation split folder as the default evaluation image root.
+
+    Runtime configs from older experiments can point validation images at a broad
+    raw-image pool. Checkpoint selection should be tied to the validation split:
+    val/annotations.json plus val/images when that canonical folder exists.
+    Explicit --val-images overrides are respected by config_from_run().
+    """
+    sibling_val_images = _split_images_dir_from_annotations(val_annotations, {"val", "validation"})
+    return sibling_val_images or Path(configured_val_images)
+
+
 def config_from_run(run_dir: Path, **overrides: Any) -> EvaluationConfig:
     run_dir = Path(run_dir).expanduser().resolve(strict=False)
     runtime_yaml = run_dir / "config" / "runtime_config.yaml"
     val_ann = overrides.pop("val_annotations", None)
     val_img = overrides.pop("val_images", None)
+    explicit_val_images = val_img is not None
     test_ann = overrides.pop("test_annotations", None)
     test_img = overrides.pop("test_images", None)
     train_ann = None
@@ -159,6 +182,10 @@ def config_from_run(run_dir: Path, **overrides: Any) -> EvaluationConfig:
             f"cannot determine validation dataset for {run_dir}: runtime_config.yaml missing "
             "or lacks trainer.data.val.dataset paths; pass --val-annotations/--val-images explicitly"
         )
+    val_ann_path = Path(str(val_ann))
+    val_img_path = Path(str(val_img))
+    if not explicit_val_images:
+        val_img_path = _resolve_default_validation_images(val_ann_path, val_img_path)
     if test_ann is None or test_img is None:
         inferred_test_ann, inferred_test_img = _default_test_paths(Path(str(train_ann)) if train_ann else None)
         test_ann = test_ann or inferred_test_ann
@@ -167,8 +194,8 @@ def config_from_run(run_dir: Path, **overrides: Any) -> EvaluationConfig:
     defaults = load_defaults()
     kwargs: dict[str, Any] = {
         "run_dir": run_dir,
-        "val_annotations": Path(str(val_ann)),
-        "val_images": Path(str(val_img)),
+        "val_annotations": val_ann_path,
+        "val_images": val_img_path,
         "train_annotations": Path(str(train_ann)) if train_ann else None,
         "test_annotations": Path(str(test_ann)) if test_ann else None,
         "test_images": Path(str(test_img)) if test_img else None,

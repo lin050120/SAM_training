@@ -277,6 +277,94 @@ class ValidationGuardTest(unittest.TestCase):
         self.assertTrue(any("allowed_for_model_evaluation=false" in w for w in result.warnings))
 
 
+class EvaluationConfigFromRunTest(unittest.TestCase):
+    def _write_runtime_config(
+        self,
+        run_dir: Path,
+        train_images: Path,
+        train_annotations: Path,
+        val_images: Path,
+        val_annotations: Path,
+    ) -> None:
+        config_dir = run_dir / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "runtime_config.yaml").write_text(
+            "\n".join(
+                [
+                    "trainer:",
+                    "  data:",
+                    "    train:",
+                    "      dataset:",
+                    f"        img_folder: {train_images}",
+                    f"        ann_file: {train_annotations}",
+                    "    val:",
+                    "      dataset:",
+                    f"        img_folder: {val_images}",
+                    f"        ann_file: {val_annotations}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    def test_default_validation_images_resolve_to_val_split_folder(self) -> None:
+        from core.checkpoint_evaluation.evaluator import config_from_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "book_spine_sam3_dataset"
+            train_images = dataset / "train" / "images"
+            val_images = dataset / "val" / "images"
+            raw_images = root / "dataset_raw"
+            for path in (train_images, val_images, raw_images):
+                path.mkdir(parents=True)
+            train_annotations = dataset / "train" / "annotations.json"
+            val_annotations = dataset / "val" / "annotations.json"
+            train_annotations.write_text("{}", encoding="utf-8")
+            val_annotations.write_text("{}", encoding="utf-8")
+            run_dir = root / "run"
+            self._write_runtime_config(
+                run_dir,
+                train_images=raw_images,
+                train_annotations=train_annotations,
+                val_images=raw_images,
+                val_annotations=val_annotations,
+            )
+
+            config = config_from_run(run_dir)
+
+        self.assertEqual(config.val_annotations, val_annotations)
+        self.assertEqual(config.val_images, val_images)
+
+    def test_explicit_val_images_override_is_respected(self) -> None:
+        from core.checkpoint_evaluation.evaluator import config_from_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "book_spine_sam3_dataset"
+            train_images = dataset / "train" / "images"
+            val_images = dataset / "val" / "images"
+            override_images = root / "manual_val_images"
+            for path in (train_images, val_images, override_images):
+                path.mkdir(parents=True)
+            train_annotations = dataset / "train" / "annotations.json"
+            val_annotations = dataset / "val" / "annotations.json"
+            train_annotations.write_text("{}", encoding="utf-8")
+            val_annotations.write_text("{}", encoding="utf-8")
+            run_dir = root / "run"
+            self._write_runtime_config(
+                run_dir,
+                train_images=train_images,
+                train_annotations=train_annotations,
+                val_images=train_images,
+                val_annotations=val_annotations,
+            )
+
+            config = config_from_run(run_dir, val_images=override_images)
+
+        self.assertEqual(config.val_images, override_images)
+
+
 class ReportWriterTest(unittest.TestCase):
     def test_training_summary_update_is_atomic_and_preserves_fields(self) -> None:
         from core.checkpoint_evaluation.report_writer import update_training_summary
