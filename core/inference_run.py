@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import cv2
 import torch
+from PIL import Image, ImageOps
 
 from core.coco_export import build_coco, validate_coco, write_coco
 from core.cvat_export import export_cvat_package
@@ -51,14 +52,36 @@ def _manifest_row(source_image: Path | str | None, file_name: str, image_id: int
     }
 
 
-def _copy_image(source_image: Path, destination: Path, cvat_destination: Path) -> tuple[int, int]:
-    shutil.copy2(source_image, destination)
+def _copy_image(
+    source_image: Path,
+    destination: Path,
+    cvat_destination: Path,
+    normalize_exif_orientation: bool = True,
+) -> tuple[int, int, int | None]:
+    orientation: int | None = None
+    try:
+        with Image.open(source_image) as image:
+            orientation = image.getexif().get(274)
+            if normalize_exif_orientation and orientation and orientation != 1:
+                normalized = ImageOps.exif_transpose(image)
+                save_kwargs: dict[str, Any] = {}
+                if destination.suffix.lower() in {".jpg", ".jpeg"} and normalized.mode != "RGB":
+                    normalized = normalized.convert("RGB")
+                    save_kwargs["quality"] = 95
+                elif destination.suffix.lower() in {".jpg", ".jpeg"}:
+                    save_kwargs["quality"] = 95
+                normalized.save(destination, **save_kwargs)
+            else:
+                shutil.copy2(source_image, destination)
+    except Exception:
+        orientation = None
+        shutil.copy2(source_image, destination)
     shutil.copy2(destination, cvat_destination)
     image = cv2.imread(str(destination))
     if image is None:
         raise ValueError(f"Cannot read copied image: {destination}")
     height, width = image.shape[:2]
-    return width, height
+    return width, height, orientation
 
 
 def _write_image_outputs(
@@ -192,7 +215,12 @@ def migrate_legacy_raw_run(
             if not source_image.exists() and rec.get("orig_path"):
                 source_image = Path(rec["orig_path"])
             copied_image = paths.input_images / file_name
-            width, height = _copy_image(source_image, copied_image, paths.cvat_images / file_name)
+            width, height, orientation = _copy_image(
+                source_image,
+                copied_image,
+                paths.cvat_images / file_name,
+                normalize_exif_orientation=False,
+            )
             raw_npz_src = legacy_run_dir / rec["npz_path"]
             raw_instances = load_npz(raw_npz_src)
             nms_instances, _, image_timings = _write_image_outputs(
@@ -201,6 +229,8 @@ def migrate_legacy_raw_run(
             row["timings"] = image_timings
             row["width"] = width
             row["height"] = height
+            row["exif_orientation"] = orientation
+            row["image_orientation_normalized"] = False
             image_records.append({"coco_image_id": image_index, "file_name": file_name, "width": width, "height": height})
             instances_by_image_id[image_index] = nms_instances
         except Exception as exc:
@@ -333,7 +363,7 @@ def run_sam3_image_directory(
         try:
             copied_image = paths.input_images / file_name
             image_read_start = time.perf_counter()
-            width, height = _copy_image(source_image, copied_image, paths.cvat_images / file_name)
+            width, height, orientation = _copy_image(source_image, copied_image, paths.cvat_images / file_name)
             image_read_seconds = time.perf_counter() - image_read_start
             infer_start = time.perf_counter()
             raw_instances = adapter.predict(
@@ -365,6 +395,8 @@ def run_sam3_image_directory(
             }
             row["width"] = width
             row["height"] = height
+            row["exif_orientation"] = orientation
+            row["image_orientation_normalized"] = bool(orientation and orientation != 1)
             image_records.append({"coco_image_id": image_index, "file_name": file_name, "width": width, "height": height})
             instances_by_image_id[image_index] = nms_instances
             logger.info(

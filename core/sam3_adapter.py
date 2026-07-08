@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 
 from core.checkpoint_export import (
     CHECKPOINT_TYPE_BASE,
@@ -161,9 +161,10 @@ class Sam3Adapter:
     @staticmethod
     def _to_pil(image: np.ndarray | str | Path | Image.Image) -> Image.Image:
         if isinstance(image, Image.Image):
-            return image.convert("RGB")
+            return ImageOps.exif_transpose(image).convert("RGB")
         if isinstance(image, (str, Path)):
-            return Image.open(image).convert("RGB")
+            with Image.open(image) as opened:
+                return ImageOps.exif_transpose(opened).convert("RGB")
         if isinstance(image, np.ndarray):
             return Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         raise TypeError(f"Unsupported image type: {type(image)}")
