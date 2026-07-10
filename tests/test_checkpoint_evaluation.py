@@ -529,6 +529,42 @@ class SplitEvaluationArtifactTest(unittest.TestCase):
             self.assertEqual(data["iou_matrix"], [[1.0]])
             self.assertEqual(data["accepted_matches"][0]["gt_index"], 0)
 
+    def test_visualization_overlays_use_distinct_instance_colors(self) -> None:
+        import cv2
+
+        from core.checkpoint_evaluation.artifacts import write_visualizations
+        from core.checkpoint_evaluation.dataset_loader import ImageGroundTruth
+        from core.checkpoint_evaluation.mask_matching import match_instances
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "img.png"
+            cv2.imwrite(str(image_path), np.zeros((20, 20, 3), dtype=np.uint8))
+            gt_masks = [
+                _rect(20, 20, 1, 6, 1, 6),
+                _rect(20, 20, 10, 15, 10, 15),
+            ]
+            pred_masks = [
+                _rect(20, 20, 1, 6, 1, 6),
+                _rect(20, 20, 10, 15, 10, 15),
+            ]
+            gt = ImageGroundTruth(
+                image_id=1,
+                file_name="img.png",
+                path=image_path,
+                width=20,
+                height=20,
+                masks=gt_masks,
+                annotation_ids=[1, 2],
+            )
+            paths = write_visualizations(Path(tmp), "validation", "checkpoint_5", gt, pred_masks, match_instances(gt_masks, pred_masks))
+            gt_overlay = cv2.imread(paths["gt_overlay"], cv2.IMREAD_COLOR)
+            pred_overlay = cv2.imread(paths["prediction_overlay"], cv2.IMREAD_COLOR)
+
+        self.assertIsNotNone(gt_overlay)
+        self.assertIsNotNone(pred_overlay)
+        self.assertNotEqual(tuple(gt_overlay[2, 2].tolist()), tuple(gt_overlay[12, 12].tolist()))
+        self.assertNotEqual(tuple(pred_overlay[2, 2].tolist()), tuple(pred_overlay[12, 12].tolist()))
+
     def test_registered_test_split_identity_is_diagnostic_only(self) -> None:
         from core.dataset_identity import resolve_split_identity
         from core.config import BOOK_ROOT

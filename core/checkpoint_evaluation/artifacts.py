@@ -286,11 +286,38 @@ def write_match_record(split_dir: Path, split: str, ckpt_key: str, checkpoint_na
     return path
 
 
-def _overlay_masks(image: np.ndarray, masks: list[np.ndarray], color: tuple[int, int, int], alpha: float = 0.45) -> np.ndarray:
+_INSTANCE_COLORS_BGR: tuple[tuple[int, int, int], ...] = (
+    (0, 255, 0),
+    (0, 0, 255),
+    (255, 0, 0),
+    (0, 255, 255),
+    (255, 0, 255),
+    (255, 255, 0),
+    (0, 128, 255),
+    (255, 128, 0),
+    (128, 0, 255),
+    (128, 255, 0),
+    (255, 0, 128),
+    (0, 255, 128),
+)
+
+
+def _instance_color(index: int, offset: int = 0) -> tuple[int, int, int]:
+    return _INSTANCE_COLORS_BGR[(index + offset) % len(_INSTANCE_COLORS_BGR)]
+
+
+def _overlay_masks(
+    image: np.ndarray,
+    masks: list[np.ndarray],
+    color: tuple[int, int, int] | None = None,
+    alpha: float = 0.45,
+    color_offset: int = 0,
+) -> np.ndarray:
     out = image.copy()
-    for mask in masks:
+    for idx, mask in enumerate(masks):
         m = mask.astype(bool)
-        out[m] = ((1 - alpha) * out[m] + alpha * np.array(color, dtype=np.uint8)).astype(np.uint8)
+        mask_color = color or _instance_color(idx, color_offset)
+        out[m] = ((1 - alpha) * out[m] + alpha * np.array(mask_color, dtype=np.uint8)).astype(np.uint8)
     return out
 
 
@@ -310,26 +337,26 @@ def write_visualizations(split_dir: Path, split: str, ckpt_key: str, gt, pred_ma
         "boundary_overlay": vis_dir / f"{stem}_boundary_overlay.png",
     }
     cv2.imwrite(str(paths["original"]), image)
-    cv2.imwrite(str(paths["gt_overlay"]), _overlay_masks(image, gt.masks, (0, 255, 0)))
-    cv2.imwrite(str(paths["prediction_overlay"]), _overlay_masks(image, pred_masks, (0, 0, 255)))
+    cv2.imwrite(str(paths["gt_overlay"]), _overlay_masks(image, gt.masks))
+    cv2.imwrite(str(paths["prediction_overlay"]), _overlay_masks(image, pred_masks, color_offset=3))
     matched = image.copy()
     for gi, pi, iou in match.matches:
-        matched = _overlay_masks(matched, [gt.masks[gi]], (0, 255, 0), 0.35)
-        matched = _overlay_masks(matched, [pred_masks[pi]], (0, 0, 255), 0.35)
+        matched = _overlay_masks(matched, [gt.masks[gi]], _instance_color(gi), 0.35)
+        matched = _overlay_masks(matched, [pred_masks[pi]], _instance_color(pi, 3), 0.35)
         x, y, w, h = _bbox_xywh(gt.masks[gi])
         cv2.putText(matched, f"gt{gi}/p{pi} IoU={iou:.2f}", (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     cv2.imwrite(str(paths["matched_overlay"]), matched)
     fp_miss = image.copy()
-    fp_miss = _overlay_masks(fp_miss, [gt.masks[i] for i in match.unmatched_gt], (0, 255, 255), 0.55)
-    fp_miss = _overlay_masks(fp_miss, [pred_masks[i] for i in match.unmatched_pred], (255, 0, 255), 0.55)
+    fp_miss = _overlay_masks(fp_miss, [gt.masks[i] for i in match.unmatched_gt], alpha=0.55)
+    fp_miss = _overlay_masks(fp_miss, [pred_masks[i] for i in match.unmatched_pred], alpha=0.55, color_offset=3)
     cv2.imwrite(str(paths["fp_miss_overlay"]), fp_miss)
     boundary = image.copy()
-    for mask in gt.masks:
+    for idx, mask in enumerate(gt.masks):
         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(boundary, contours, -1, (0, 255, 0), 1)
-    for mask in pred_masks:
+        cv2.drawContours(boundary, contours, -1, _instance_color(idx), 1)
+    for idx, mask in enumerate(pred_masks):
         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(boundary, contours, -1, (0, 0, 255), 1)
+        cv2.drawContours(boundary, contours, -1, _instance_color(idx, 3), 1)
     cv2.imwrite(str(paths["boundary_overlay"]), boundary)
     return {k: str(v) for k, v in paths.items()}
 
