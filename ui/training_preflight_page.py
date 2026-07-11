@@ -18,6 +18,7 @@ from core.config import (
     DEFAULT_SAM3_CHECKPOINT,
     DEFAULT_TRAINING_RUN_ROOT,
 )
+from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
 from core.sam301_patch import verify_patched_for_training
 from core.sam301_patch import collect_training_provenance
 from core.training_runner import (
@@ -55,6 +56,71 @@ STAGE_B_NOTE = "只有满足预检通过、runtime YAML/checkpoint/数据均存�
 
 _preflight_launch_lock = threading.Lock()
 _consumed_preflight_tokens: set[str] = set()
+
+
+def build_dataset_split(
+    annotation_pool_dir: str,
+    test_dir: str,
+    output_dir: str,
+    category_name: str,
+    val_ratio: str,
+    seed: str,
+    overwrite: bool,
+) -> tuple[str, str, str, str, str, str, str, str]:
+    errors: list[str] = []
+    if not annotation_pool_dir:
+        errors.append("标注数据文件夹不能为空")
+    if not test_dir:
+        errors.append("test 数据文件夹不能为空")
+    if not output_dir:
+        errors.append("输出数据集目录不能为空")
+    ratio_value, ratio_error = parse_optional_positive_float(val_ratio)
+    if ratio_error:
+        errors.append(f"val ratio: {ratio_error}")
+    if ratio_value is None:
+        ratio_value = 0.10
+    if ratio_value < 0 or ratio_value >= 1:
+        errors.append("val ratio 必须 >=0 且 <1")
+    seed_value, seed_error = parse_optional_positive_int(seed)
+    if seed_error:
+        errors.append(f"seed: {seed_error}")
+    if seed_value is None:
+        seed_value = 42
+    if errors:
+        return "VALIDATION FAILED:\n" + "\n".join(errors), "", "", "", "", "", "", ""
+
+    try:
+        result = build_training_dataset(
+            DatasetBuildConfig(
+                annotation_pool_dir=Path(annotation_pool_dir).expanduser(),
+                test_dir=Path(test_dir).expanduser(),
+                output_dir=Path(output_dir).expanduser(),
+                category_name=category_name or "book spine",
+                val_ratio=float(ratio_value),
+                seed=int(seed_value),
+                overwrite=bool(overwrite),
+            )
+        )
+    except Exception as exc:
+        logger.exception("dataset_split_build_failed")
+        return f"ERROR: dataset split build failed: {exc!r}", "", "", "", "", "", "", ""
+
+    paths = result["paths"]
+    status = (
+        "DATASET BUILD OK\n"
+        + format_json(result)
+        + "\n\n已将 train/val 路径填入下方训练预检输入框。test split 已完整来自 test 数据文件夹。"
+    )
+    return (
+        status,
+        paths["train_images"],
+        paths["train_annotations"],
+        paths["val_images"],
+        paths["val_annotations"],
+        paths["test_images"],
+        paths["test_annotations"],
+        result["category_name"],
+    )
 
 
 def _empty_preflight_state() -> dict[str, Any]:
@@ -354,6 +420,27 @@ def build_training_tab() -> None:
 
     preflight_state = gr.State(_empty_preflight_state())
 
+    gr.Markdown("### 数据集自动划分: 标注数据 → train/val，test 数据 → test")
+    gr.Markdown(
+        "输入两个已标注 COCO 数据文件夹：标注数据文件夹会随机切分为 train/val，"
+        "test 数据文件夹会整体写入 test。默认 val ratio=0.10，约为标注数据总量的 1/10。"
+    )
+    with gr.Row():
+        split_pool_dir = gr.Textbox(label="标注数据文件夹 (自动切 train/val)", value="")
+        split_test_dir = gr.Textbox(label="test 数据文件夹 (全部进入 test)", value="")
+    with gr.Row():
+        split_output_dir = gr.Textbox(label="输出数据集目录", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT))
+        split_category_name = gr.Textbox(label="category / training prompt", value="book spine")
+    with gr.Row():
+        split_val_ratio = gr.Textbox(label="val ratio", value="0.10")
+        split_seed = gr.Textbox(label="random seed", value="42")
+        split_overwrite = gr.Checkbox(label="允许覆盖输出目录 (旧目录会先改名为 backup)", value=False)
+    split_btn = gr.Button("自动生成 train/val/test 数据集")
+    split_status = gr.Code(label="数据集划分结果", language="json")
+    with gr.Row():
+        generated_test_images = gr.Textbox(label="生成的 test images", interactive=False)
+        generated_test_annotations = gr.Textbox(label="生成的 test COCO", interactive=False)
+
     gr.Markdown("### 阶段 A: 生成并验证训练配置")
     with gr.Row():
         config_path = gr.Textbox(label="authoritative config", value=str(DEFAULT_BOOK_SPINE_FINETUNE_CONFIG))
@@ -394,6 +481,28 @@ def build_training_tab() -> None:
         training_prompt, output_root, max_epochs, train_batch_size, gradient_accumulation_steps,
         learning_rate, num_workers, num_gpus, training_mode,
     ]
+    split_btn.click(
+        fn=build_dataset_split,
+        inputs=[
+            split_pool_dir,
+            split_test_dir,
+            split_output_dir,
+            split_category_name,
+            split_val_ratio,
+            split_seed,
+            split_overwrite,
+        ],
+        outputs=[
+            split_status,
+            train_images,
+            train_annotations,
+            val_images,
+            val_annotations,
+            generated_test_images,
+            generated_test_annotations,
+            training_prompt,
+        ],
+    )
     preflight_btn.click(
         fn=run_training_preflight,
         inputs=preflight_inputs,
