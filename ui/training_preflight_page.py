@@ -58,6 +58,39 @@ _preflight_launch_lock = threading.Lock()
 _consumed_preflight_tokens: set[str] = set()
 
 
+def _parse_optional_nonnegative_float(value: Any) -> tuple[float | None, str | None]:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None, None
+    try:
+        parsed = float(text)
+    except ValueError:
+        return None, f"must be a number, got {value!r}"
+    if parsed < 0:
+        return None, f"must be >= 0, got {parsed}"
+    return parsed, None
+
+
+def _parse_optional_nonnegative_int(value: Any) -> tuple[int | None, str | None]:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None, None
+    try:
+        parsed_float = float(text)
+    except ValueError:
+        return None, f"must be an integer, got {value!r}"
+    parsed = int(parsed_float)
+    if parsed != parsed_float:
+        return None, f"must be an integer, got {value!r}"
+    if parsed < 0:
+        return None, f"must be >= 0, got {parsed}"
+    return parsed, None
+
+
+def _preserve_dataset_split_outputs(status: str) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
+    return (status, *(gr.update() for _ in range(7)))
+
+
 def build_dataset_split(
     annotation_pool_dir: str,
     test_dir: str,
@@ -66,7 +99,7 @@ def build_dataset_split(
     val_ratio: str,
     seed: str,
     overwrite: bool,
-) -> tuple[str, str, str, str, str, str, str, str]:
+) -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
     errors: list[str] = []
     if not annotation_pool_dir:
         errors.append("标注数据文件夹不能为空")
@@ -74,20 +107,20 @@ def build_dataset_split(
         errors.append("test 数据文件夹不能为空")
     if not output_dir:
         errors.append("输出数据集目录不能为空")
-    ratio_value, ratio_error = parse_optional_positive_float(val_ratio)
+    ratio_value, ratio_error = _parse_optional_nonnegative_float(val_ratio)
     if ratio_error:
         errors.append(f"val ratio: {ratio_error}")
     if ratio_value is None:
         ratio_value = 0.10
     if ratio_value < 0 or ratio_value >= 1:
         errors.append("val ratio 必须 >=0 且 <1")
-    seed_value, seed_error = parse_optional_positive_int(seed)
+    seed_value, seed_error = _parse_optional_nonnegative_int(seed)
     if seed_error:
         errors.append(f"seed: {seed_error}")
     if seed_value is None:
         seed_value = 42
     if errors:
-        return "VALIDATION FAILED:\n" + "\n".join(errors), "", "", "", "", "", "", ""
+        return _preserve_dataset_split_outputs("VALIDATION FAILED:\n" + "\n".join(errors))
 
     try:
         result = build_training_dataset(
@@ -103,7 +136,7 @@ def build_dataset_split(
         )
     except Exception as exc:
         logger.exception("dataset_split_build_failed")
-        return f"ERROR: dataset split build failed: {exc!r}", "", "", "", "", "", "", ""
+        return _preserve_dataset_split_outputs(f"ERROR: dataset split build failed: {exc!r}")
 
     paths = result["paths"]
     status = (

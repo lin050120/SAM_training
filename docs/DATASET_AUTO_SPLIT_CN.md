@@ -63,7 +63,7 @@
 勾选“允许覆盖输出目录”时，程序会先构建临时目录；只有构建成功后，旧输出目录才会被改名为：
 
 ```text
-<output_dir>.backup_YYYYMMDD_HHMMSS
+<output_dir>.backup_YYYYMMDD_HHMMSS_microseconds
 ```
 
 然后新数据集移动到 `<output_dir>`。
@@ -92,6 +92,9 @@ python scripts/build_training_dataset_split.py ... --overwrite
 
 - test 数据不会混入 train/val；
 - train/val 只来自标注数据文件夹；
+- 标注数据文件夹内部如果出现重复图片内容，会直接拒绝构建，避免同一图片随机落入 train 和 val；
+- 标注数据文件夹和 test 数据文件夹如果出现相同图片内容，会直接拒绝构建，避免 test 泄漏进 train/val；
+- 输出目录不能位于任一输入目录内部，避免二次 rebuild 时把上一次输出的 COCO 重新收集进来；
 - 所有输出图片会全局重命名为 `im_000001.*` 形式，避免不同批次重名；
 - COCO `image_id`、`annotation_id`、`file_name` 会重新映射；
 - 输出 COCO category 统一为页面或 CLI 中填写的 category name；

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -41,6 +42,7 @@ class DatasetRecord:
     source: str
     batch: str
     original_name: str
+    image_sha256: str
 
 
 def _is_coco_json(path: Path) -> bool:
@@ -97,6 +99,14 @@ def _image_size(path: Path, image_record: dict[str, Any]) -> tuple[int, int]:
     return int(image.shape[1]), int(image.shape[0])
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _copy_annotation(annotation: dict[str, Any]) -> dict[str, Any]:
     return {
         "bbox": annotation.get("bbox", [0, 0, 0, 0]),
@@ -135,12 +145,53 @@ def _gather_records(root: Path, source: str, counter_start: int, config: Dataset
                     source=source,
                     batch=coco_dir.name,
                     original_name=Path(original_file_name).name,
+                    image_sha256=_sha256_file(source_path),
                 )
             )
     if missing_images:
         preview = "; ".join(missing_images[:10])
         raise FileNotFoundError(f"{len(missing_images)} image(s) referenced by COCO were not found: {preview}")
     return records, counter
+
+
+def _duplicate_sha_groups(records: list[DatasetRecord]) -> dict[str, list[DatasetRecord]]:
+    groups: dict[str, list[DatasetRecord]] = defaultdict(list)
+    for record in records:
+        groups[record.image_sha256].append(record)
+    return {sha: items for sha, items in groups.items() if len(items) > 1}
+
+
+def _describe_records(records: list[DatasetRecord], limit: int = 6) -> str:
+    return "; ".join(
+        f"{r.source}:{r.batch}/{r.original_name} ({r.source_path})"
+        for r in records[:limit]
+    )
+
+
+def _validate_no_duplicate_pool_images(pool_records: list[DatasetRecord]) -> None:
+    duplicate_groups = _duplicate_sha_groups(pool_records)
+    if duplicate_groups:
+        sha, records = next(iter(duplicate_groups.items()))
+        raise ValueError(
+            "annotation pool contains duplicate image content; refusing to split because "
+            "duplicates can leak between train and val. "
+            f"sha256={sha}, examples={_describe_records(records)}"
+        )
+
+
+def _validate_no_pool_test_overlap(pool_records: list[DatasetRecord], test_records: list[DatasetRecord]) -> None:
+    pool_by_sha: dict[str, list[DatasetRecord]] = defaultdict(list)
+    for record in pool_records:
+        pool_by_sha[record.image_sha256].append(record)
+    for test_record in test_records:
+        overlaps = pool_by_sha.get(test_record.image_sha256)
+        if overlaps:
+            raise ValueError(
+                "annotation pool and test directory contain the same image content; refusing to build "
+                "because test would leak into train/val. "
+                f"sha256={test_record.image_sha256}, pool={_describe_records(overlaps)}, "
+                f"test={_describe_records([test_record])}"
+            )
 
 
 def _split_pool(records: list[DatasetRecord], val_ratio: float, seed: int) -> tuple[list[DatasetRecord], list[DatasetRecord]]:
@@ -256,6 +307,17 @@ def _install_built_dataset(tmp_output: Path, output_dir: Path, overwrite: bool) 
     return None
 
 
+def _validate_output_not_inside_inputs(output_dir: Path, *input_dirs: Path) -> None:
+    resolved_output = Path(output_dir).expanduser().resolve(strict=False)
+    for input_dir in input_dirs:
+        resolved_input = Path(input_dir).expanduser().resolve(strict=False)
+        if resolved_output == resolved_input or resolved_output.is_relative_to(resolved_input):
+            raise ValueError(
+                "output directory must not be inside an input directory; otherwise previous outputs "
+                f"can be re-ingested as source COCO on rebuild: output={resolved_output}, input={resolved_input}"
+            )
+
+
 def build_training_dataset(config: DatasetBuildConfig) -> dict[str, Any]:
     output_dir = Path(config.output_dir).expanduser().resolve(strict=False)
     if not config.category_name.strip():
@@ -264,11 +326,14 @@ def build_training_dataset(config: DatasetBuildConfig) -> dict[str, Any]:
         raise ValueError(f"val_ratio must be in [0, 1), got {config.val_ratio}")
     if output_dir == Path("/"):
         raise ValueError("refusing to write dataset to filesystem root")
+    _validate_output_not_inside_inputs(output_dir, config.annotation_pool_dir, config.test_dir)
 
     test_records, counter = _gather_records(config.test_dir, "test", 0, config)
     pool_records, _counter = _gather_records(config.annotation_pool_dir, "pool", counter, config)
     if not test_records:
         raise ValueError("test directory produced no usable images")
+    _validate_no_duplicate_pool_images(pool_records)
+    _validate_no_pool_test_overlap(pool_records, test_records)
     train_records, val_records = _split_pool(pool_records, float(config.val_ratio), int(config.seed))
     split_records = {"train": train_records, "val": val_records, "test": test_records}
 

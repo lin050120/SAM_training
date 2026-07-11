@@ -656,12 +656,14 @@ class PreflightGuardsTest(unittest.TestCase):
         from core.training_runner import inspect_training_config
 
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
-            # current default train set has 44 images; effective = 1 x 64 x 1 = 64 > 44
+            train_data = json.loads((DEFAULT_BOOK_SPINE_DATASET_ROOT / "train" / "annotations.json").read_text())
+            train_image_count = len(train_data.get("images", []))
+            # Force effective = train_image_count + 1, regardless of fixture size.
             preflight = inspect_training_config(
                 training_prompt="book spine",
                 max_epochs=1,
                 train_batch_size=1,
-                gradient_accumulation_steps=64,
+                gradient_accumulation_steps=train_image_count + 1,
                 output_root=Path(tmp),
                 prepare_runtime=True,
                 collect_import_metadata=False,

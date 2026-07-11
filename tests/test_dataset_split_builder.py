@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _write_fixture_batch(root: Path, name: str, count: int, category_name: str = "book spine") -> None:
+def _write_fixture_batch(root: Path, name: str, count: int, category_name: str = "book spine", color_offset: int = 0) -> None:
     batch = root / name
     images_dir = batch / "images"
     images_dir.mkdir(parents=True)
@@ -24,7 +24,7 @@ def _write_fixture_batch(root: Path, name: str, count: int, category_name: str =
     for idx in range(1, count + 1):
         file_name = f"src_{idx:03d}.png"
         image = np.zeros((20, 30, 3), dtype=np.uint8)
-        image[:, :] = (idx * 7) % 255
+        image[:, :] = (color_offset + idx * 7) % 255
         cv2.imwrite(str(images_dir / file_name), image)
         images.append({"id": idx, "file_name": file_name, "width": 30, "height": 20})
         annotations.append(
@@ -56,7 +56,7 @@ class DatasetSplitBuilderTest(unittest.TestCase):
             pool = root / "pool"
             test = root / "test_input"
             _write_fixture_batch(pool, "pool_batch", 20)
-            _write_fixture_batch(test, "test_batch", 5)
+            _write_fixture_batch(test, "test_batch", 5, color_offset=100)
             out = root / "dataset"
 
             result = build_training_dataset(
@@ -93,7 +93,7 @@ class DatasetSplitBuilderTest(unittest.TestCase):
             test = root / "test_input"
             out = root / "dataset"
             _write_fixture_batch(pool, "pool_batch", 4)
-            _write_fixture_batch(test, "test_batch", 2)
+            _write_fixture_batch(test, "test_batch", 2, color_offset=100)
             out.mkdir()
             (out / "keep.txt").write_text("existing", encoding="utf-8")
 
@@ -116,7 +116,7 @@ class DatasetSplitBuilderTest(unittest.TestCase):
             test = root / "test_input"
             out = root / "dataset"
             _write_fixture_batch(pool, "pool_batch", 10)
-            _write_fixture_batch(test, "test_batch", 3)
+            _write_fixture_batch(test, "test_batch", 3, color_offset=100)
 
             status, train_images, train_ann, val_images, val_ann, test_images, test_ann, prompt = build_dataset_split(
                 str(pool),
@@ -136,6 +136,79 @@ class DatasetSplitBuilderTest(unittest.TestCase):
         self.assertTrue(test_images.endswith("/test/images"))
         self.assertTrue(test_ann.endswith("/test/annotations.json"))
         self.assertEqual(prompt, "cable")
+
+    def test_duplicate_pool_image_content_is_rejected(self) -> None:
+        from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pool = root / "pool"
+            test = root / "test_input"
+            _write_fixture_batch(pool, "pool_batch_a", 3)
+            _write_fixture_batch(pool, "pool_batch_b", 3)
+            _write_fixture_batch(test, "test_batch", 2, color_offset=100)
+
+            with self.assertRaisesRegex(ValueError, "duplicate image content"):
+                build_training_dataset(DatasetBuildConfig(pool, test, root / "dataset"))
+
+    def test_pool_test_image_content_overlap_is_rejected(self) -> None:
+        from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pool = root / "pool"
+            test = root / "test_input"
+            _write_fixture_batch(pool, "pool_batch", 3)
+            _write_fixture_batch(test, "test_batch", 2)
+
+            with self.assertRaisesRegex(ValueError, "test would leak into train/val"):
+                build_training_dataset(DatasetBuildConfig(pool, test, root / "dataset"))
+
+    def test_output_directory_inside_input_is_rejected(self) -> None:
+        from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pool = root / "pool"
+            test = root / "test_input"
+            _write_fixture_batch(pool, "pool_batch", 3)
+            _write_fixture_batch(test, "test_batch", 2, color_offset=100)
+
+            with self.assertRaisesRegex(ValueError, "must not be inside an input directory"):
+                build_training_dataset(DatasetBuildConfig(pool, test, pool / "dataset"))
+
+    def test_training_page_handler_preserves_outputs_on_validation_error(self) -> None:
+        from ui.training_preflight_page import build_dataset_split
+
+        result = build_dataset_split("", "/tmp/test", "/tmp/out", "book spine", "0.10", "42", False)
+
+        self.assertIn("VALIDATION FAILED", result[0])
+        self.assertTrue(all(isinstance(item, dict) for item in result[1:]))
+
+    def test_training_page_handler_accepts_zero_ratio_and_seed(self) -> None:
+        from ui.training_preflight_page import build_dataset_split
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pool = root / "pool"
+            test = root / "test_input"
+            out = root / "dataset"
+            _write_fixture_batch(pool, "pool_batch", 5)
+            _write_fixture_batch(test, "test_batch", 2, color_offset=100)
+
+            status, _train_images, _train_ann, _val_images, val_ann, _test_images, _test_ann, _prompt = build_dataset_split(
+                str(pool),
+                str(test),
+                str(out),
+                "book spine",
+                "0",
+                "0",
+                False,
+            )
+            val_coco = json.loads(Path(val_ann).read_text(encoding="utf-8"))
+
+        self.assertIn("DATASET BUILD OK", status)
+        self.assertEqual(len(val_coco["images"]), 0)
 
 
 if __name__ == "__main__":
