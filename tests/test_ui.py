@@ -219,6 +219,42 @@ class InferenceCommandBuilderTest(unittest.TestCase):
         self.assertIn("cpu", command)
 
 
+class InferenceModelFieldSyncTest(unittest.TestCase):
+    def test_discovered_model_updates_display_fields_and_checkpoint(self) -> None:
+        from ui.inference_page import sync_ui_model_fields
+
+        selected = "/tmp/run/checkpoints/inference_checkpoint_35.pt"
+
+        directory, filename, absolute, checkpoint = sync_ui_model_fields(
+            "discovered",
+            selected,
+            str(DEFAULT_SAM3_CHECKPOINT.parent),
+            DEFAULT_SAM3_CHECKPOINT.name,
+            str(DEFAULT_SAM3_CHECKPOINT),
+        )
+
+        self.assertEqual(directory, "/tmp/run/checkpoints")
+        self.assertEqual(filename, "inference_checkpoint_35.pt")
+        self.assertEqual(absolute, selected)
+        self.assertEqual(checkpoint, selected)
+
+    def test_default_model_updates_display_fields_and_checkpoint(self) -> None:
+        from ui.inference_page import sync_ui_model_fields
+
+        directory, filename, absolute, checkpoint = sync_ui_model_fields(
+            "default",
+            "/tmp/run/checkpoints/inference_checkpoint_35.pt",
+            "/tmp/run/checkpoints",
+            "inference_checkpoint_35.pt",
+            "/tmp/run/checkpoints/inference_checkpoint_35.pt",
+        )
+
+        self.assertEqual(directory, str(DEFAULT_SAM3_CHECKPOINT.parent))
+        self.assertEqual(filename, DEFAULT_SAM3_CHECKPOINT.name)
+        self.assertEqual(absolute, str(DEFAULT_SAM3_CHECKPOINT))
+        self.assertEqual(checkpoint, str(DEFAULT_SAM3_CHECKPOINT))
+
+
 class OptionalLimitParsingTest(unittest.TestCase):
     """Gradio delivers None/''/NaN for empty numeric fields; the adapter must not
     mistake empty for 'limit set to an invalid value'."""

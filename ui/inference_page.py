@@ -42,6 +42,28 @@ def resolve_ui_model_path(source: str, discovered_path: str, model_dir: str, fil
         return f"ERROR: {exc}"
 
 
+def sync_ui_model_fields(
+    source: str,
+    discovered_path: str,
+    model_dir: str,
+    filename: str,
+    absolute_path: str,
+) -> tuple[str, str, str, str]:
+    """Return directory/name/full-path display values plus the resolved checkpoint.
+
+    The resolved checkpoint textbox was already updated on source changes, but the
+    auxiliary display fields stayed at their previous values. Keeping all four
+    values derived from the same resolver avoids UI drift without changing the
+    backend inference command.
+    """
+    resolved = resolve_ui_model_path(source, discovered_path, model_dir, filename, absolute_path)
+    if resolved.startswith("ERROR:"):
+        return model_dir, filename, absolute_path, resolved
+
+    path = Path(resolved)
+    return str(path.parent), path.name, str(path), resolved
+
+
 def check_ui_model(source: str, discovered_path: str, model_dir: str, filename: str, absolute_path: str) -> tuple[str, str]:
     resolved = resolve_ui_model_path(source, discovered_path, model_dir, filename, absolute_path)
     if resolved.startswith("ERROR:"):
@@ -358,20 +380,38 @@ def build_inference_tab() -> None:
     )
     stop_btn.click(fn=stop_inference, inputs=[], outputs=[status_box])
 
-    def _refresh_models():
+    def _refresh_models(source, directory, filename, absolute):
         choices = discovered_model_choices()
-        return gr.update(choices=choices, value=choices[0][1] if choices else None)
+        selected = choices[0][1] if choices else None
+        next_directory, next_filename, next_absolute, next_checkpoint = sync_ui_model_fields(
+            source,
+            selected,
+            directory,
+            filename,
+            absolute,
+        )
+        return (
+            gr.update(choices=choices, value=selected),
+            next_directory,
+            next_filename,
+            next_absolute,
+            next_checkpoint,
+        )
 
-    def _resolve(source, discovered, directory, filename, absolute):
-        return resolve_ui_model_path(source, discovered, directory, filename, absolute)
+    def _sync(source, discovered, directory, filename, absolute):
+        return sync_ui_model_fields(source, discovered, directory, filename, absolute)
 
     for component in [model_source, discovered_model, model_dir, model_filename, absolute_model_path]:
         component.change(
-            fn=_resolve,
+            fn=_sync,
             inputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path],
-            outputs=[checkpoint],
+            outputs=[model_dir, model_filename, absolute_model_path, checkpoint],
         )
-    refresh_models_btn.click(fn=_refresh_models, inputs=[], outputs=[discovered_model])
+    refresh_models_btn.click(
+        fn=_refresh_models,
+        inputs=[model_source, model_dir, model_filename, absolute_model_path],
+        outputs=[discovered_model, model_dir, model_filename, absolute_model_path, checkpoint],
+    )
     check_model_btn.click(
         fn=check_ui_model,
         inputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path],
