@@ -72,6 +72,27 @@ def sync_ui_model_fields(
     return str(path.parent), path.name, str(path), resolved
 
 
+def sync_discovered_model_selection(
+    discovered_path: str,
+) -> tuple[str, str, str, str, str]:
+    """Selecting a discovered model should also switch the source radio.
+
+    Otherwise Gradio sends the new dropdown value while model_source is still
+    "default", and the generic resolver correctly returns the base sam3.pt path.
+    """
+    if not discovered_path:
+        directory, filename, absolute, checkpoint = sync_ui_model_fields("default", "", "", "", "")
+        return "default", directory, filename, absolute, checkpoint
+    directory, filename, absolute, checkpoint = sync_ui_model_fields(
+        "discovered",
+        discovered_path,
+        "",
+        "",
+        "",
+    )
+    return "discovered", directory, filename, absolute, checkpoint
+
+
 def check_ui_model(source: str, discovered_path: str, model_dir: str, filename: str, absolute_path: str) -> tuple[str, str]:
     resolved = resolve_ui_model_path(source, discovered_path, model_dir, filename, absolute_path)
     if resolved.startswith("ERROR:"):
@@ -391,14 +412,16 @@ def build_inference_tab() -> None:
     def _refresh_models(source, directory, filename, absolute):
         choices = discovered_model_choices()
         selected = choices[0][1] if choices else None
+        next_source = "discovered" if selected else source
         next_directory, next_filename, next_absolute, next_checkpoint = sync_ui_model_fields(
-            source,
+            next_source,
             selected,
             directory,
             filename,
             absolute,
         )
         return (
+            next_source,
             gr.update(choices=choices, value=selected),
             next_directory,
             next_filename,
@@ -409,16 +432,21 @@ def build_inference_tab() -> None:
     def _sync(source, discovered, directory, filename, absolute):
         return sync_ui_model_fields(source, discovered, directory, filename, absolute)
 
-    for component in [model_source, discovered_model, model_dir, model_filename, absolute_model_path]:
+    for component in [model_source, model_dir, model_filename, absolute_model_path]:
         component.change(
             fn=_sync,
             inputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path],
             outputs=[model_dir, model_filename, absolute_model_path, checkpoint],
         )
+    discovered_model.change(
+        fn=sync_discovered_model_selection,
+        inputs=[discovered_model],
+        outputs=[model_source, model_dir, model_filename, absolute_model_path, checkpoint],
+    )
     refresh_models_btn.click(
         fn=_refresh_models,
         inputs=[model_source, model_dir, model_filename, absolute_model_path],
-        outputs=[discovered_model, model_dir, model_filename, absolute_model_path, checkpoint],
+        outputs=[model_source, discovered_model, model_dir, model_filename, absolute_model_path, checkpoint],
     )
     check_model_btn.click(
         fn=check_ui_model,

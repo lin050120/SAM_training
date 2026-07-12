@@ -269,6 +269,30 @@ class InferenceCommandBuilderTest(unittest.TestCase):
 
 
 class InferenceModelFieldSyncTest(unittest.TestCase):
+    def test_selecting_discovered_model_switches_source_and_checkpoint(self) -> None:
+        from ui.inference_page import sync_discovered_model_selection
+
+        selected = "/tmp/run/checkpoints/inference_checkpoint_35.pt"
+
+        source, directory, filename, absolute, checkpoint = sync_discovered_model_selection(selected)
+
+        self.assertEqual(source, "discovered")
+        self.assertEqual(directory, "/tmp/run/checkpoints")
+        self.assertEqual(filename, "inference_checkpoint_35.pt")
+        self.assertEqual(absolute, selected)
+        self.assertEqual(checkpoint, selected)
+
+    def test_clearing_discovered_model_returns_to_default_checkpoint(self) -> None:
+        from ui.inference_page import sync_discovered_model_selection
+
+        source, directory, filename, absolute, checkpoint = sync_discovered_model_selection("")
+
+        self.assertEqual(source, "default")
+        self.assertEqual(directory, str(DEFAULT_SAM3_CHECKPOINT.parent))
+        self.assertEqual(filename, DEFAULT_SAM3_CHECKPOINT.name)
+        self.assertEqual(absolute, str(DEFAULT_SAM3_CHECKPOINT))
+        self.assertEqual(checkpoint, str(DEFAULT_SAM3_CHECKPOINT))
+
     def test_discovered_model_updates_display_fields_and_checkpoint(self) -> None:
         from ui.inference_page import sync_ui_model_fields
 
