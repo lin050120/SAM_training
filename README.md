@@ -1,9 +1,12 @@
 # SAM3 Fine-tuning Workflow
 
-单目标 SAM3 微调工作流（默认书脊，也支持 cable 等任意新目标）。
+> Languages: **English** | [中文](README_CN.md) | [日本語](README_JA.md)
 
-- 简明使用说明与注意事项：[`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)
-- 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
+单目标 SAM3 微调工作流（默认书脊，也支持 cable 等任意新目标）。The local web UI has a
+中文/日本語 language switch at the top.
+
+- 简明使用说明与注意事项：[`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)（日本語: [`docs/QUICK_START_JA.md`](docs/QUICK_START_JA.md)）
+- 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)（日本語: [`docs/USER_GUIDE_JA.md`](docs/USER_GUIDE_JA.md)）
 
 ## Local Web UI (Stage D1 / D1.1 / E1)
 

@@ -1,5 +1,7 @@
 # SAM3 Fine-tuning 工具：简明使用说明与注意事项
 
+> 语言版本：**中文** | [日本語](QUICK_START_JA.md)
+
 面向日常使用的最短路径说明。完整细节见 `docs/USER_GUIDE_ZH_CN.md`。
 
 ## 这个程序是做什么的

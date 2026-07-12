@@ -12,6 +12,7 @@ import gradio as gr
 from ui.cvat_page import build_cvat_tab
 from ui.dataset_registry_page import build_dataset_registry_tab
 from ui.history_page import build_history_tab
+from ui.i18n import build_language_radio, wire_language_switch
 from ui.inference_page import build_inference_tab
 from ui.results_page import build_results_tab
 from ui.checkpoint_evaluation_page import build_checkpoint_evaluation_tab
@@ -22,6 +23,7 @@ def build_app() -> gr.Blocks:
     """Assemble the stage D1 local Web UI. Page logic lives in ui/*_page.py; this
     function only wires pages into tabs and must not contain business logic."""
     with gr.Blocks(title="SAM3 Fine-tuning Tools") as demo:
+        lang_radio = build_language_radio()
         gr.Markdown(
             "# SAM3 Fine-tuning 工具\n"
             "阶段 D1 本地 Web UI：把现有命令行流程可视化，不重写推理/NMS/COCO/CVAT/训练预检逻辑。"
@@ -41,6 +43,9 @@ def build_app() -> gr.Blocks:
                 build_dataset_registry_tab()
             with gr.Tab("Checkpoint 评估"):
                 build_checkpoint_evaluation_tab()
+        # Must run after every page is built: it snapshots all components once
+        # and wires the top language radio to update their labels/texts.
+        wire_language_switch(demo, lang_radio)
     return demo
 
 

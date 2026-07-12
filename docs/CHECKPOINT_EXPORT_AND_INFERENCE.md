@@ -1,5 +1,7 @@
 # Checkpoint Export and Inference
 
+> Languages: **English** | [中文](CHECKPOINT_EXPORT_AND_INFERENCE_CN.md) | [日本語](CHECKPOINT_EXPORT_AND_INFERENCE_JA.md)
+
 Generated: 2026-07-03
 
 ## Three checkpoint types (never guess from filename)

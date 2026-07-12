@@ -1,5 +1,7 @@
 # SAM 模型选择与 Checkpoint 导出
 
+> 语言版本：**中文** | [日本語](SAM_MODEL_SELECTION_AND_EXPORT_JA.md)
+
 ## 1. Trainer checkpoint 与 inference model 的区别
 
 `checkpoint_N.pt` 和 `checkpoint.pt` 是训练恢复用的 trainer checkpoint，里面包含 `model`、`optimizer`、epoch、scaler 等训练状态。它不能直接交给普通推理入口使用。

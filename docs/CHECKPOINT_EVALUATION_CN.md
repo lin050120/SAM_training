@@ -1,5 +1,7 @@
 # Checkpoint 评估与最佳模型选择（中文说明）
 
+> 语言版本：**中文** | [日本語](CHECKPOINT_EVALUATION_JA.md)
+
 生成时间: 2026-07-04
 
 ## 1. checkpoint.pt 与 checkpoint_N.pt 的区别

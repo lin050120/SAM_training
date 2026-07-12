@@ -38,6 +38,54 @@ class UiImportsTest(unittest.TestCase):
         self.assertIsNotNone(app.demo)
 
 
+class UiLanguageSwitchTest(unittest.TestCase):
+    def test_every_chinese_ui_string_has_japanese_translation(self) -> None:
+        import re
+
+        import gradio as gr
+
+        import app
+        from ui import i18n
+
+        demo = app.build_app()
+        han = re.compile(r"[一-鿿]")
+        missed: list[tuple[str, str, str]] = []
+        for block in demo.blocks.values():
+            if isinstance(block, gr.Radio) and getattr(block, "label", "") == "Language / 语言 / 言語":
+                continue  # the switch itself is intentionally trilingual
+            for attr in ("label", "info", "placeholder"):
+                text = getattr(block, attr, None)
+                if isinstance(text, str) and han.search(text) and text.strip() not in i18n._JA_NORMALIZED:
+                    missed.append((type(block).__name__, attr, text[:60]))
+            if isinstance(block, (gr.Markdown, gr.Button)):
+                text = getattr(block, "value", None)
+                # The CUDA banner is runtime data (detection results), not chrome.
+                if isinstance(text, str) and han.search(text) and "CUDA 检测" not in text:
+                    if text.strip() not in i18n._JA_NORMALIZED:
+                        missed.append((type(block).__name__, "value", text[:60]))
+            for label, _value in getattr(block, "choices", None) or []:
+                if isinstance(label, str) and han.search(label) and label.strip() not in i18n._JA_NORMALIZED:
+                    missed.append((type(block).__name__, "choice", label[:60]))
+        self.assertEqual(missed, [])
+
+    def test_switch_translates_and_restores(self) -> None:
+        import app
+
+        demo = app.build_app()
+        updates_ja = demo.i18n_switch("ja")
+        updates_zh = demo.i18n_switch("zh")
+        self.assertEqual(len(updates_ja), len(updates_zh))
+        self.assertGreater(len(updates_ja), 50)
+        ja_labels = {u.get("label") for u in updates_ja if isinstance(u, dict)}
+        for expected in ("推論タスク設定", "学習プリフライト", "データセット登録", "プリフライト状態"):
+            self.assertIn(expected, ja_labels)
+        self.assertIn("训练预检", {u.get("label") for u in updates_zh if isinstance(u, dict)})
+        ja_choice_updates = [u["choices"] for u in updates_ja if isinstance(u, dict) and "choices" in u]
+        self.assertTrue(
+            any(("formal（人手レビュー済み GT が必要）", "formal") in choices for choices in ja_choice_updates)
+        )
+
+
 @unittest.skipUnless(REAL_RUN_DIR.exists(), "real inference run fixture not present")
 class RunReaderRealRunTest(unittest.TestCase):
     def test_summarize_run_reads_real_fields(self) -> None:

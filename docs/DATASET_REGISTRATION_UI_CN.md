@@ -1,5 +1,7 @@
 # 数据集登记 UI 使用说明
 
+> 语言版本：**中文** | [日本語](DATASET_REGISTRATION_UI_JA.md)
+
 这个页面用于把已经人工审核过的 train/val/test 数据集登记到
 `data_manifests/dataset_identity_registry.json`。登记后，训练预检才能识别这套
 数据是否允许 `formal` 或多 epoch 训练。

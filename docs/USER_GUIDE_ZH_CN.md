@@ -1,5 +1,7 @@
 # SAM3 书脊训练与推理中文使用说明
 
+> 语言版本：**中文** | [日本語](USER_GUIDE_JA.md)
+
 适用项目：`/home/book/book01`
 
 适用 SAM3 源码：`/home/book/sam301`
