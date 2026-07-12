@@ -33,7 +33,7 @@
 
 ## 6. 评价流程与固定条件
 
-所有 checkpoint 使用**完全相同**的条件（写入 `evaluation/evaluation_config.yaml`）：图片与 GT、prompt（默认取该 run 的 `resolved_training_prompt`，即 `book spine`）、score/confidence 阈值、min_area、dtype（bf16）、device、mask 后处理（统一走 `core.sam3_adapter.Sam3Adapter.predict`）、SAM3 源码 hash、评估器版本。trainer checkpoint 通过 `core.checkpoint_export.load_trainer_checkpoint_model` **strict=True** 加载进全新模型（零静默丢权重）。
+所有 checkpoint 使用**完全相同**的条件（写入 `evaluation/evaluation_config.yaml`）：图片与 GT、prompt（优先取该 run 记录的 `resolved_training_prompt`，例如 `book spine` 或 `cable`；run 没有记录时回落到 `config/checkpoint_evaluation.yaml` 的 `prompt`；`--prompt` 显式传入时优先级最高）、score/confidence 阈值、min_area、dtype（bf16）、device、mask 后处理（统一走 `core.sam3_adapter.Sam3Adapter.predict`）、SAM3 源码 hash、评估器版本。trainer checkpoint 通过 `core.checkpoint_export.load_trainer_checkpoint_model` **strict=True** 加载进全新模型（零静默丢权重）。
 
 默认完整流程：
 

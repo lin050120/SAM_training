@@ -1,6 +1,9 @@
-# Book Spine SAM3 Workflow
+# SAM3 Fine-tuning Workflow
 
-中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
+单目标 SAM3 微调工作流（默认书脊，也支持 cable 等任意新目标）。
+
+- 简明使用说明与注意事项：[`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)
+- 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
 
 ## Local Web UI (Stage D1 / D1.1 / E1)
 
@@ -92,9 +95,17 @@ conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \
 
 ## Authoritative SAM3 Training Config
 
-The default book-spine fine-tuning config for this workspace is:
+The authoritative fine-tuning config for this workspace is:
 
 `/home/book/sam301/sam3/train/configs/book_spine/book_spine_finetune.yaml`
+
+Despite the book_spine name, it is the fixed base template for **any** single-target
+category: preflight never edits it, and instead renders a per-run
+`runtime_config.yaml` that overrides the prompt, dataset paths, checkpoint, and
+output/log directories (`dumps/<task_slug>`, `logs/<task_slug>`). To train a
+different target (e.g. cable), point train/val at that dataset and set the training
+prompt — no YAML editing needed. When `--training-prompt` is omitted, the prompt
+falls back to the COCO's first category name.
 
 Use the preflight command to inspect the config and generate the training command without starting training:
 

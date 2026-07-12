@@ -303,9 +303,15 @@ UI 启动失败时检查：
 - 图片目录可读；
 - COCO `annotations.json` 可读；
 - COCO `images[].file_name` 能在图片根目录下找到；
-- category 中包含 `book_spine`；
+- categories 非空（预检取 id 最小的 category 作为目标类别；val 的 categories
+  必须包含该类别。目标可以是任何名称，例如 `book_spine` 或 `cable`）；
 - segmentation 可被当前流程解析；
 - train 和 val 均非空。
+
+正式（多 epoch）训练还要求该数据集已在
+`data_manifests/dataset_identity_registry.json` 中登记为
+`allowed_for_formal_training=true`；未登记的数据集（包括新目标数据集）
+只能跑 smoke 模式且 `max_epochs<=1`。
 
 当前 smoke 数据路径：
 

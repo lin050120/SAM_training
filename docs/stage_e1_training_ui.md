@@ -123,7 +123,7 @@ conda run -n sam301 python \
 - 训练子进程的 stdout/stderr 会被实时捕获并显示在页面的日志框里（`ui/training_process_manager.py::training_snapshot()` 每次轮询取一次全量快照）。
 - 完整原始日志会一直保留在内存快照里，训练结束（含被停止）后仍可在页面上看到全部历史输出。
 - `training_summary.json` 由服务端进程生命周期回调生成：reader 线程读完 stdout/stderr、记录 exit code 和 finished_at 后原子写入 summary。浏览器关闭、刷新、网络断开或不再调用 Gradio polling callback，都不影响 completed/failed/cancelled 最终落盘。UI 轮询只负责显示当前状态；浏览器重新连接后，历史页面从磁盘读取 `training_summary.json` 恢复最终状态。
-- 官方训练器自己也会往 `<run_dir>/logs/book_spine/` 和 `<run_dir>/tensorboard/` 写日志（runtime YAML 里的 `trainer.logging.log_dir`/`trainer.logging.tensorboard_writer.log_dir` 已经指向本次 run 目录），这是训练器自身的行为，UI 没有改动。
+- 官方训练器自己也会往 `<run_dir>/logs/<task_slug>/`（书脊任务为 `logs/book_spine/`）和 `<run_dir>/tensorboard/` 写日志（runtime YAML 里的 `trainer.logging.log_dir`/`trainer.logging.tensorboard_writer.log_dir` 已经指向本次 run 目录），这是训练器自身的行为，UI 没有改动。
 
 ## 7. Checkpoint 位置
 
@@ -202,7 +202,7 @@ config/runtime_config.yaml
 dataset_info.json
 training_config_summary.json
 command.txt
-logs/book_spine/...         (训练器写)
+logs/<task_slug>/...        (训练器写；slug 按 prompt/category 生成，书脊为 book_spine，cable 为 cable)
 tensorboard/...             (训练器写)
 checkpoints/...             (训练器写，save_freq=5 表示每 5 epoch 存一次；max_epochs=1 时要看训练器是否在结束时也存一份，需要实测确认)
 training_summary.json       (UI 在训练进程退出后写)
