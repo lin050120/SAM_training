@@ -206,7 +206,11 @@ def config_from_run(run_dir: Path, **overrides: Any) -> EvaluationConfig:
         "prompt", "score_threshold", "confidence_threshold", "min_area", "dtype_mode",
         "boundary_tolerance_px", "include_baseline",
     ):
-        if key in defaults and key not in overrides:
+        # `key not in kwargs` keeps the run's own recorded training prompt: the
+        # defaults file is a fallback for runs without a recorded prompt, never an
+        # override — otherwise every non-book target would be evaluated with the
+        # wrong text prompt. Explicit CLI overrides still win via kwargs.update().
+        if key in defaults and key not in overrides and key not in kwargs:
             kwargs[key] = defaults[key]
     kwargs.update(overrides)
     if "baseline_checkpoint" in kwargs and kwargs["baseline_checkpoint"] is not None:

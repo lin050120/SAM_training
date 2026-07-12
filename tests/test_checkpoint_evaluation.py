@@ -364,6 +364,42 @@ class EvaluationConfigFromRunTest(unittest.TestCase):
 
         self.assertEqual(config.val_images, override_images)
 
+    def test_run_summary_prompt_beats_defaults_file(self) -> None:
+        import json as _json
+
+        from core.checkpoint_evaluation.evaluator import config_from_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "cable_dataset"
+            train_images = dataset / "train" / "images"
+            val_images = dataset / "val" / "images"
+            for path in (train_images, val_images):
+                path.mkdir(parents=True)
+            train_annotations = dataset / "train" / "annotations.json"
+            val_annotations = dataset / "val" / "annotations.json"
+            train_annotations.write_text("{}", encoding="utf-8")
+            val_annotations.write_text("{}", encoding="utf-8")
+            run_dir = root / "run"
+            self._write_runtime_config(
+                run_dir,
+                train_images=train_images,
+                train_annotations=train_annotations,
+                val_images=val_images,
+                val_annotations=val_annotations,
+            )
+            (run_dir / "training_config_summary.json").write_text(
+                _json.dumps({"resolved_training_prompt": "cable"}), encoding="utf-8"
+            )
+
+            config = config_from_run(run_dir)
+            overridden = config_from_run(run_dir, prompt="manual override")
+
+        # The run's recorded prompt must survive the defaults file (which pins
+        # "book spine"); an explicit override must beat both.
+        self.assertEqual(config.prompt, "cable")
+        self.assertEqual(overridden.prompt, "manual override")
+
 
 class ReportWriterTest(unittest.TestCase):
     def test_training_summary_update_is_atomic_and_preserves_fields(self) -> None:

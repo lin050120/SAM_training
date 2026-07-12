@@ -2,6 +2,9 @@
 # Values here are the shared fixed inference conditions applied to EVERY checkpoint;
 # per-run overrides go through scripts/evaluate_sam3_checkpoints.py flags.
 
+# prompt is a FALLBACK only, used when a run has no recorded
+# resolved_training_prompt in training_config_summary.json (old runs). Runs that
+# recorded their prompt are always evaluated with that prompt.
 prompt: book spine
 score_threshold: 0.3
 confidence_threshold: 0.05
