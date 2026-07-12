@@ -263,6 +263,67 @@ class DatasetRegistryBuilderTest(unittest.TestCase):
             self.assertTrue(identity.allowed_for_formal_training)
             self.assertEqual(identity.dataset_id, "cable_human_corrected_v1")
 
+            # Audit convention: the registry's recorded hash must reproduce via
+            # `sha256sum <manifest>` on the file actually on disk, and the
+            # manifests must not embed their own hash.
+            import hashlib
+
+            for key, path_key in (
+                ("dataset_manifest_sha256", "dataset_manifest_path"),
+                ("split_manifest_sha256", "split_manifest_path"),
+            ):
+                on_disk = Path(result[path_key]).read_bytes()
+                self.assertEqual(result["entry"][key], hashlib.sha256(on_disk).hexdigest())
+                self.assertNotIn(key.encode("utf-8"), on_disk)
+
+    def test_nested_file_name_resolves_like_preflight(self) -> None:
+        from core.dataset_registry import summarize_split
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = Path(tmp) / "ds"
+            images_dir = dataset / "train" / "images"
+            (images_dir / "sub").mkdir(parents=True)
+            (images_dir / "sub" / "a.jpg").write_bytes(b"x")
+            (dataset / "train" / "annotations.json").write_text(
+                json.dumps(
+                    {
+                        "images": [{"id": 1, "file_name": "sub/a.jpg", "width": 1, "height": 1}],
+                        "annotations": [],
+                        "categories": [{"id": 1, "name": "cable"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = summarize_split(dataset, "train")
+        self.assertEqual(summary["image_count"], 1)
+
+    def test_duplicate_accounting_is_cross_split(self) -> None:
+        from core.dataset_registry import build_dataset_identity_artifacts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "ds"
+            self._write_split(dataset, "train", 2)
+            self._write_split(dataset, "val", 1)
+            # Same bytes in train and val: a cross-split leak the totals must expose.
+            (dataset / "val" / "images" / "im_000001.jpg").write_bytes(b"train-1")
+
+            entry, _, _ = build_dataset_identity_artifacts(
+                dataset_root=dataset,
+                dataset_id="leaky",
+                annotation_source="src",
+                annotation_source_evidence="fixture",
+                human_reviewed=False,
+                independently_corrected_gt=False,
+                allowed_for_formal_training=False,
+                manifests_dir=root / "manifests",
+            )
+
+        self.assertEqual(entry["image_file_count"], 3)
+        self.assertEqual(entry["unique_image_count"], 2)
+        self.assertEqual(entry["exact_duplicate_group_count"], 1)
+        self.assertNotIn("image_hashes", entry["splits"]["train"])
+
 
 @unittest.skipUnless(_FORMAL_DATA_PRESENT, "formal split COCO files not present on this machine")
 class PreflightIdentityIntegrationTest(unittest.TestCase):

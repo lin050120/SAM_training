@@ -38,19 +38,23 @@ data/cable_sam3_dataset/
 - `dataset_id`：唯一名字，例如 `cable_human_corrected_v1`
 - `annotation source`：标注来源；如果是 SAM3 预标注后人工修正，选
   `sam3_preannotation_then_human_corrected`
-- `annotation source evidence`：一句话说明为什么确认它已人工审核，例如
-  “All train/val/test annotations were manually reviewed and corrected before registration.”
-- `human reviewed`：确认人工审核过时勾选
-- `independently corrected GT`：确认可作为人工修正 GT 时勾选
-- `allow formal training`：允许正式训练和多 epoch 时勾选
-- `allow final model evaluation`：只有这套数据是最终盲测评估集时才勾选；一般保持不勾选
+- `annotation source evidence`：必填。写清**谁、什么时候、审核了什么**，例如
+  「2026-07-12 由 <姓名> 在 CVAT 中逐张检查并修正了 train/val 全部 52 张图的
+  所有实例边界」。这是留给日后审计的证据，不要写空泛的模板句。
+- `human reviewed` / `independently corrected GT` / `allow formal training` /
+  `allow final model evaluation`：四个勾选默认**全部未勾选**。登记即授权——
+  只勾选你能亲自负责的项。`allow formal training` 要求前两项同时勾选，
+  否则写入会被拒绝。`allow final model evaluation` 一般保持不勾选。
 - `覆盖同 dataset_id 的既有登记和 manifest`：只有你明确要替换旧登记时才勾选
 
 ## 推荐操作顺序
 
 1. 填好表单。
-2. 点击 `预览登记内容`。
+2. 点击 `预览登记内容`（会对每张图片计算 sha256，大数据集需要等待）。
 3. 检查输出里的 split 路径、图片数量、标注数量、category、sha256。
+   `total_unique_image_count` 是跨 train/val/test 全局去重的数量；
+   `exact_duplicate_group_count` > 0 说明存在内容完全相同的图片
+   （尤其注意是否跨 split 重复——那是数据泄漏）。
 4. 确认无误后点击 `写入登记`。
 5. 回到 `训练预检` 页面，选择同一套 train/val COCO，`training mode` 设为
    `formal`，再运行预检。

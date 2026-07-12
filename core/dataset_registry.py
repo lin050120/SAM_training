@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,9 @@ def _image_path(images_dir: Path, file_name: str) -> Path:
     raw = Path(file_name)
     if raw.is_absolute():
         return raw.resolve(strict=False)
-    return (images_dir / raw.name).resolve(strict=False)
+    # Keep any subdirectory components: preflight resolves images as
+    # <image_dir>/<file_name>, and registration must agree with it.
+    return (images_dir / raw).resolve(strict=False)
 
 
 def summarize_split(dataset_root: Path, split: str) -> dict[str, Any]:
@@ -81,6 +84,9 @@ def summarize_split(dataset_root: Path, split: str) -> dict[str, Any]:
         "unique_image_count": len(set(image_hashes)),
         "annotation_count": len(coco["annotations"]),
         "categories": coco["categories"],
+        # consumed (and removed) by build_dataset_identity_artifacts for
+        # cross-split duplicate accounting; never persisted.
+        "image_hashes": image_hashes,
     }
 
 
@@ -119,8 +125,16 @@ def build_dataset_identity_artifacts(
         if (root / split / "annotations.json").exists() or (root / split / "images").exists():
             splits[split] = summarize_split(root, split)
 
+    all_image_hashes: list[str] = []
+    for item in splits.values():
+        all_image_hashes.extend(item.pop("image_hashes"))
     image_file_count = sum(int(item["image_count"]) for item in splits.values())
-    unique_image_count = sum(int(item["unique_image_count"]) for item in splits.values())
+    # Unique/duplicate accounting is across the WHOLE dataset, not per split:
+    # the same photo appearing in train and val is exactly the leakage this
+    # registry exists to make visible.
+    unique_image_count = len(set(all_image_hashes))
+    hash_counts = Counter(all_image_hashes)
+    exact_duplicate_group_count = sum(1 for count in hash_counts.values() if count > 1)
     annotation_count = sum(int(item["annotation_count"]) for item in splits.values())
     created_at = datetime.now(timezone.utc).isoformat()
     manifest_root = Path(manifests_dir) if manifests_dir is not None else BOOK_ROOT / "data_manifests"
@@ -174,7 +188,7 @@ def build_dataset_identity_artifacts(
         "image_file_count": image_file_count,
         "unique_image_count": unique_image_count,
         "annotation_count": annotation_count,
-        "exact_duplicate_group_count": image_file_count - unique_image_count,
+        "exact_duplicate_group_count": exact_duplicate_group_count,
         "splits": splits,
         "basis_and_review_reports": [],
     }
@@ -230,12 +244,11 @@ def register_dataset_identity(
 
     _atomic_write_json(manifest_path, dataset_manifest)
     _atomic_write_json(split_path, split_manifest)
+    # The manifests must NOT contain their own hash: the registry records the
+    # sha256 of the file as written, so `sha256sum <manifest>` must reproduce
+    # it (same convention as the existing book_spine_human_corrected_v1 entry).
     entry["dataset_manifest_sha256"] = sha256_file(manifest_path)
     entry["split_manifest_sha256"] = sha256_file(split_path)
-    dataset_manifest["dataset_manifest_sha256"] = entry["dataset_manifest_sha256"]
-    split_manifest["split_manifest_sha256"] = entry["split_manifest_sha256"]
-    _atomic_write_json(manifest_path, dataset_manifest)
-    _atomic_write_json(split_path, split_manifest)
 
     if existing_indexes:
         datasets[existing_indexes[0]] = entry

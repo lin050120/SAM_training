@@ -131,14 +131,18 @@ def build_dataset_registry_tab() -> None:
             value="formal_training_validation_and_diagnostic_test",
         )
     annotation_source_evidence = gr.Textbox(
-        label="annotation source evidence",
+        label="annotation source evidence（必填：写清谁在什么时候审核了哪些内容，不要用模板句）",
         lines=3,
-        value="All train/val/test annotations were manually reviewed and corrected before registration.",
+        value="",
+        placeholder="例: 2026-07-12 由 <姓名> 在 CVAT 中逐张检查并修正了 train/val 全部 52 张图的所有实例边界",
     )
+    # 登记即授权：这些勾选是人工背书，默认必须全部未勾选，由登记者逐项主动确认。
+    # 预填 true 会让"未经审核的数据被当成 GT"只差一次误点击——这正是 registry
+    # 要防住的事故（docs/E3_DATASET_IDENTITY_ERRATUM.md）。
     with gr.Row():
-        human_reviewed = gr.Checkbox(label="human reviewed", value=True)
-        independently_corrected_gt = gr.Checkbox(label="independently corrected GT", value=True)
-        allowed_for_formal_training = gr.Checkbox(label="allow formal training", value=True)
+        human_reviewed = gr.Checkbox(label="human reviewed", value=False)
+        independently_corrected_gt = gr.Checkbox(label="independently corrected GT", value=False)
+        allowed_for_formal_training = gr.Checkbox(label="allow formal training", value=False)
         allowed_for_model_evaluation = gr.Checkbox(label="allow final model evaluation", value=False)
     overwrite_existing = gr.Checkbox(
         label="覆盖同 dataset_id 的既有登记和 manifest",

@@ -269,7 +269,7 @@ http://127.0.0.1:7860
 UI 顶部标题：
 
 ```text
-Book Spine SAM3 工具
+SAM3 Fine-tuning 工具
 ```
 
 当前 Tab：
@@ -279,6 +279,8 @@ Book Spine SAM3 工具
 - `结果查看`
 - `CVAT 导出`
 - `训练预检`
+- `数据集登记`
+- `Checkpoint 评估`
 
 停止 UI：
 
