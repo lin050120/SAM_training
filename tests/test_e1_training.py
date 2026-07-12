@@ -651,6 +651,181 @@ class PreflightGuardsTest(unittest.TestCase):
                 write_runtime_yaml(bad_config, Path(tmp) / "out" / "runtime.yaml", paths, Path(tmp) / "run")
         self.assertIn("scratch.train_batch_size", str(ctx.exception))
 
+    def test_cable_coco_category_is_not_rejected_as_missing_book_spine(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            images = root / "images"
+            images.mkdir()
+            for name in ("a.jpg", "b.jpg"):
+                (images / name).write_bytes(b"fake")
+            annotations = root / "annotations.json"
+            annotations.write_text(
+                json.dumps(
+                    {
+                        "images": [
+                            {"id": 1, "file_name": "a.jpg", "width": 10, "height": 10},
+                            {"id": 2, "file_name": "b.jpg", "width": 10, "height": 10},
+                        ],
+                        "annotations": [
+                            {
+                                "id": 1,
+                                "image_id": 1,
+                                "category_id": 1,
+                                "bbox": [1, 1, 5, 5],
+                                "segmentation": [[1, 1, 6, 1, 6, 6, 1, 6]],
+                                "area": 25,
+                                "iscrowd": 0,
+                            }
+                        ],
+                        "categories": [{"id": 1, "name": "cable", "supercategory": ""}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = root / "minimal.yaml"
+            config.write_text(
+                "\n".join(
+                    [
+                        "trainer:",
+                        "  max_epochs: 1",
+                        "  model:",
+                        "    checkpoint_path: /unused.pt",
+                        "scratch:",
+                        "  train_batch_size: 1",
+                        "  gradient_accumulation_steps: 1",
+                        "  lr_transformer: 0.0001",
+                        "  num_train_workers: 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            checkpoint = root / "checkpoint.pt"
+            checkpoint.write_bytes(b"fake")
+
+            preflight = inspect_training_config(
+                config_path=config,
+                initial_checkpoint=checkpoint,
+                train_images=images,
+                train_annotations=annotations,
+                val_images=images,
+                val_annotations=annotations,
+                training_prompt="cable",
+                max_epochs=1,
+                output_root=root / "out",
+                allow_external_output=True,
+                prepare_runtime=False,
+            )
+
+        self.assertFalse(any("book_spine" in error for error in preflight.errors), preflight.errors)
+        self.assertEqual(preflight.coco_category_name, "cable")
+        self.assertEqual(preflight.resolved_training_prompt, "cable")
+
+    def test_coco_without_categories_is_rejected(self) -> None:
+        from core.training_runner import inspect_training_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            images = root / "images"
+            images.mkdir()
+            (images / "a.jpg").write_bytes(b"fake")
+            annotations = root / "annotations.json"
+            annotations.write_text(
+                json.dumps(
+                    {
+                        "images": [{"id": 1, "file_name": "a.jpg", "width": 10, "height": 10}],
+                        "annotations": [],
+                        "categories": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = root / "minimal.yaml"
+            config.write_text(
+                "\n".join(
+                    [
+                        "trainer:",
+                        "  max_epochs: 1",
+                        "  model:",
+                        "    checkpoint_path: /unused.pt",
+                        "scratch:",
+                        "  train_batch_size: 1",
+                        "  gradient_accumulation_steps: 1",
+                        "  lr_transformer: 0.0001",
+                        "  num_train_workers: 0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            checkpoint = root / "checkpoint.pt"
+            checkpoint.write_bytes(b"fake")
+
+            preflight = inspect_training_config(
+                config_path=config,
+                initial_checkpoint=checkpoint,
+                train_images=images,
+                train_annotations=annotations,
+                val_images=images,
+                val_annotations=annotations,
+                max_epochs=1,
+                output_root=root / "out",
+                allow_external_output=True,
+                prepare_runtime=False,
+            )
+
+        self.assertTrue(any("no categories" in error for error in preflight.errors), preflight.errors)
+
+    def test_task_slug_from_name_handles_edge_cases(self) -> None:
+        from core.training_runner import task_slug_from_name
+
+        self.assertEqual(task_slug_from_name(None), "book_spine")
+        self.assertEqual(task_slug_from_name("  "), "book_spine")
+        self.assertEqual(task_slug_from_name("Cable Set"), "cable_set")
+        self.assertEqual(task_slug_from_name("ケーブル"), "task")
+
+    @unittest.skipUnless(REAL_CONFIG_EXISTS, "real base config not present")
+    def test_runtime_yaml_uses_task_prompt_and_slug_for_non_book_target(self) -> None:
+        from omegaconf import OmegaConf
+
+        from core.training_runner import write_runtime_yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = {
+                "initial_checkpoint": root / "checkpoint.pt",
+                "bpe_path": root / "bpe.gz",
+                "train_images": root / "cable_dataset" / "train" / "images",
+                "train_annotations": root / "cable_dataset" / "train" / "annotations.json",
+                "val_images": root / "cable_dataset" / "val" / "images",
+                "val_annotations": root / "cable_dataset" / "val" / "annotations.json",
+            }
+            runtime = root / "out" / "runtime.yaml"
+            run_dir = root / "run"
+
+            write_runtime_yaml(
+                DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
+                runtime,
+                paths,
+                run_dir,
+                category_id=1,
+                training_prompt="cable",
+                task_slug="cable",
+                max_epochs=1,
+                train_batch_size=1,
+                gradient_accumulation_steps=1,
+            )
+
+            cfg = OmegaConf.load(runtime)
+            prompts = OmegaConf.select(cfg, "trainer.data.train.dataset.coco_json_loader.prompts")
+            self.assertIn("cable", prompts)
+            self.assertEqual(OmegaConf.select(cfg, "paths.dataset_root"), str(root / "cable_dataset"))
+            self.assertEqual(
+                OmegaConf.select(cfg, "trainer.meters.val.book_spine.detection.dump_dir"),
+                str(run_dir / "dumps" / "cable"),
+            )
+            self.assertEqual(OmegaConf.select(cfg, "trainer.logging.log_dir"), str(run_dir / "logs" / "cable"))
+
     @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
     def test_train_smaller_than_effective_batch_is_rejected(self) -> None:
         from core.training_runner import inspect_training_config

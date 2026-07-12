@@ -10,6 +10,7 @@ from pycocotools import mask as cocomask
 
 from core.mask_nms import mask_bbox_xywh
 from core.npz_io import InstanceSet
+from core.config import DEFAULT_CATEGORY_NAME
 
 POLYGON_TARGET_POINTS = 8
 POLYGON_MAX_POINTS = 12
@@ -84,7 +85,7 @@ def mask_to_rle(mask: np.ndarray) -> dict[str, Any]:
 def build_coco(
     image_records: list[dict[str, Any]],
     instances_by_image_id: dict[int, InstanceSet],
-    category_name: str = "book_spine",
+    category_name: str = DEFAULT_CATEGORY_NAME,
     min_area: int = 1,
     segmentation_format: str = "polygon",
     polygon_target_points: int = POLYGON_TARGET_POINTS,
@@ -93,7 +94,7 @@ def build_coco(
     if segmentation_format not in {"polygon", "rle"}:
         raise ValueError(f"Unsupported segmentation_format: {segmentation_format}")
     coco: dict[str, Any] = {
-        "info": {"description": "book spine SAM3 predictions"},
+        "info": {"description": f"{category_name} SAM3 predictions"},
         "licenses": [],
         "images": [],
         "annotations": [],

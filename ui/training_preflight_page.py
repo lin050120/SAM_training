@@ -13,9 +13,10 @@ import gradio as gr
 
 from core.config import (
     BOOK_ROOT,
-    DEFAULT_BOOK_SPINE_DATASET_ROOT,
+    DEFAULT_DATASET_ROOT,
     DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
     DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_TRAINING_PROMPT,
     DEFAULT_TRAINING_RUN_ROOT,
 )
 from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
@@ -128,7 +129,7 @@ def build_dataset_split(
                 annotation_pool_dir=Path(annotation_pool_dir).expanduser(),
                 test_dir=Path(test_dir).expanduser(),
                 output_dir=Path(output_dir).expanduser(),
-                category_name=category_name or "book spine",
+                category_name=category_name or DEFAULT_TRAINING_PROMPT,
                 val_ratio=float(ratio_value),
                 seed=int(seed_value),
                 overwrite=bool(overwrite),
@@ -446,9 +447,8 @@ def build_training_tab() -> None:
     gr.Markdown(BANNER)
     gr.Markdown(STAGE_A_NOTE)
     gr.Markdown(
-        "**数据身份**：当前默认书脊数据集（含 `formal_book_spine_sam3_dataset`）是 SAM3 "
-        "机器预标注，**未经人工审核**，仅用于训练流程 smoke test，不构成正式微调效果证据。"
-        "详见 `docs/E3_DATASET_IDENTITY_ERRATUM.md`。"
+        "**数据身份**：预检会按当前 train/val COCO 路径查询 dataset registry。未注册或未经人工审核的"
+        "数据集只能用于 smoke test，不构成正式微调效果证据。详见 `docs/E3_DATASET_IDENTITY_ERRATUM.md`。"
     )
 
     preflight_state = gr.State(_empty_preflight_state())
@@ -462,8 +462,8 @@ def build_training_tab() -> None:
         split_pool_dir = gr.Textbox(label="标注数据文件夹 (自动切 train/val)", value="")
         split_test_dir = gr.Textbox(label="test 数据文件夹 (全部进入 test)", value="")
     with gr.Row():
-        split_output_dir = gr.Textbox(label="输出数据集目录", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT))
-        split_category_name = gr.Textbox(label="category / training prompt", value="book spine")
+        split_output_dir = gr.Textbox(label="输出数据集目录", value=str(DEFAULT_DATASET_ROOT))
+        split_category_name = gr.Textbox(label="category / training prompt", value=DEFAULT_TRAINING_PROMPT)
     with gr.Row():
         split_val_ratio = gr.Textbox(label="val ratio", value="0.10")
         split_seed = gr.Textbox(label="random seed", value="42")
@@ -479,13 +479,13 @@ def build_training_tab() -> None:
         config_path = gr.Textbox(label="authoritative config", value=str(DEFAULT_BOOK_SPINE_FINETUNE_CONFIG))
         checkpoint = gr.Textbox(label="initial checkpoint", value=str(DEFAULT_SAM3_CHECKPOINT))
     with gr.Row():
-        train_images = gr.Textbox(label="train images", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT / "train" / "images"))
-        train_annotations = gr.Textbox(label="train COCO", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT / "train" / "annotations.json"))
+        train_images = gr.Textbox(label="train images", value=str(DEFAULT_DATASET_ROOT / "train" / "images"))
+        train_annotations = gr.Textbox(label="train COCO", value=str(DEFAULT_DATASET_ROOT / "train" / "annotations.json"))
     with gr.Row():
-        val_images = gr.Textbox(label="val images", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT / "val" / "images"))
-        val_annotations = gr.Textbox(label="val COCO", value=str(DEFAULT_BOOK_SPINE_DATASET_ROOT / "val" / "annotations.json"))
+        val_images = gr.Textbox(label="val images", value=str(DEFAULT_DATASET_ROOT / "val" / "images"))
+        val_annotations = gr.Textbox(label="val COCO", value=str(DEFAULT_DATASET_ROOT / "val" / "annotations.json"))
     with gr.Row():
-        training_prompt = gr.Textbox(label="training prompt (optional manual override)", value="book spine")
+        training_prompt = gr.Textbox(label="training prompt (optional manual override)", value=DEFAULT_TRAINING_PROMPT)
         output_root = gr.Textbox(label="output root", value=str(DEFAULT_TRAINING_RUN_ROOT))
     with gr.Row():
         max_epochs = gr.Textbox(label="max_epochs (留空=基础YAML)", value="")

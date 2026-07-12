@@ -27,7 +27,7 @@
 - 标注数据文件夹：用于切分 train/val 的 COCO 数据目录
 - test 数据文件夹：全部作为 test 的 COCO 数据目录
 - 输出数据集目录：默认 `/home/book/book01/data/book_spine_sam3_dataset`
-- category / training prompt：默认 `book spine`
+- category / training prompt：默认 `book spine`，也可以填新目标，例如 `cable`
 - val ratio：默认 `0.10`
 - random seed：默认 `42`
 
@@ -82,6 +82,18 @@ python scripts/build_training_dataset_split.py \
   --seed 42
 ```
 
+训练其他单目标时，只需要把输出目录和 category 改成对应目标，例如：
+
+```bash
+python scripts/build_training_dataset_split.py \
+  --annotation-pool-dir /path/to/cable_annotated_pool \
+  --test-dir /path/to/cable_test_data \
+  --output-dir /home/book/book01/data/cable_sam3_dataset \
+  --category-name "cable" \
+  --val-ratio 0.10 \
+  --seed 42
+```
+
 如需覆盖：
 
 ```bash
@@ -97,5 +109,6 @@ python scripts/build_training_dataset_split.py ... --overwrite
 - 输出目录不能位于任一输入目录内部，避免二次 rebuild 时把上一次输出的 COCO 重新收集进来；
 - 所有输出图片会全局重命名为 `im_000001.*` 形式，避免不同批次重名；
 - COCO `image_id`、`annotation_id`、`file_name` 会重新映射；
-- 输出 COCO category 统一为页面或 CLI 中填写的 category name；
+- 输出 COCO category 统一为页面或 CLI 中填写的 category name；训练预检会用该
+  category 和用户填写的 training prompt 生成每次训练的 runtime YAML；
 - `manifest.csv` 记录每张输出图来自哪个输入文件夹、批次和原始文件名。

@@ -12,6 +12,7 @@ import torch
 from PIL import Image, ImageOps
 
 from core.coco_export import build_coco, validate_coco, write_coco
+from core.config import DEFAULT_CATEGORY_NAME, DEFAULT_TRAINING_PROMPT
 from core.cvat_export import export_cvat_package
 from core.mask_nms import apply_mask_nms
 from core.npz_io import InstanceSet, load_npz, save_npz
@@ -166,7 +167,7 @@ def migrate_legacy_raw_run(
     nms_metric: str = "iou",
     nms_mode: str = "suppress",
     min_area: int = 200,
-    category_name: str = "book_spine",
+    category_name: str = DEFAULT_CATEGORY_NAME,
 ) -> Path:
     """Create a new unified inference run from an existing ft_01 raw run."""
     paths = create_inference_run(output_root)
@@ -253,7 +254,7 @@ def run_sam3_image_directory(
     book_root: Path,
     sam3_root: Path,
     checkpoint: Path,
-    prompt: str = "book spine",
+    prompt: str = DEFAULT_TRAINING_PROMPT,
     score_threshold: float = 0.3,
     confidence_threshold: float = 0.05,
     dtype_mode: str = "bf16",
@@ -263,7 +264,7 @@ def run_sam3_image_directory(
     nms_metric: str = "iou",
     nms_mode: str = "suppress",
     min_area: int = 200,
-    category_name: str = "book_spine",
+    category_name: str = DEFAULT_CATEGORY_NAME,
     adapter_factory: Callable[..., Sam3Adapter] = Sam3Adapter,
 ) -> Path:
     """Run real SAM3 inference from images and write the unified inference run."""

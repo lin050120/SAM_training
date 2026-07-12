@@ -15,6 +15,8 @@ from typing import Any
 
 import cv2
 
+from core.config import DEFAULT_TRAINING_PROMPT
+
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -24,7 +26,7 @@ class DatasetBuildConfig:
     annotation_pool_dir: Path
     test_dir: Path
     output_dir: Path
-    category_name: str = "book spine"
+    category_name: str = DEFAULT_TRAINING_PROMPT
     val_ratio: float = 0.10
     seed: int = 42
     filename_prefix: str = "im_"

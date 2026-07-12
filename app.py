@@ -20,9 +20,9 @@ from ui.training_preflight_page import build_training_tab
 def build_app() -> gr.Blocks:
     """Assemble the stage D1 local Web UI. Page logic lives in ui/*_page.py; this
     function only wires pages into tabs and must not contain business logic."""
-    with gr.Blocks(title="Book Spine SAM3 Tools") as demo:
+    with gr.Blocks(title="SAM3 Fine-tuning Tools") as demo:
         gr.Markdown(
-            "# Book Spine SAM3 工具\n"
+            "# SAM3 Fine-tuning 工具\n"
             "阶段 D1 本地 Web UI：把现有命令行流程可视化，不重写推理/NMS/COCO/CVAT/训练预检逻辑。"
         )
         with gr.Tabs():

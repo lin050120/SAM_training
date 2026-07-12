@@ -12,6 +12,7 @@ import numpy as np
 from pycocotools import mask as cocomask
 
 from core.coco_export import build_coco, write_coco
+from core.config import DEFAULT_CATEGORY_NAME
 from core.mask_nms import mask_bbox_xywh
 from core.npz_io import load_npz
 from core.run_manager import write_json
@@ -52,8 +53,8 @@ def validate_cvat_package(
     categories = coco.get("categories", [])
     category_ids = {cat.get("id") for cat in categories}
     category_names = [cat.get("name") for cat in categories]
-    if "book_spine" not in category_names:
-        warnings.append(f"category name is not exact book_spine: {category_names}")
+    if not category_names or any(not str(name).strip() for name in category_names):
+        warnings.append(f"category name is empty or missing: {category_names}")
 
     image_ids = [img.get("id") for img in images]
     ann_ids = [ann.get("id") for ann in annotations]
@@ -221,7 +222,7 @@ def export_cvat_package(
     run_dir: Path,
     make_zip: bool = False,
     segmentation_format: str = "polygon",
-    category_name: str = "book_spine",
+    category_name: str = DEFAULT_CATEGORY_NAME,
     min_area: int = 200,
 ) -> dict[str, Any]:
     if segmentation_format not in {"polygon", "rle", "both"}:

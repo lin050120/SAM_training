@@ -54,6 +54,13 @@ smoke run against it. See `docs/E3_DATASET_IDENTITY_ERRATUM.md` for the full
 remediation and how to promote a dataset to formal status once it has been
 independently human-reviewed.
 
+This guard applies to **every** dataset, including new non-book targets (e.g. a
+cable dataset): providing dataset paths and a training prompt is enough for a
+smoke run (`max_epochs<=1`), but formal or multi-epoch training additionally
+requires registering the dataset in `data_manifests/dataset_identity_registry.json`
+with `allowed_for_formal_training=true` after human review. Unregistered datasets
+are treated as not reviewed (fail-safe default).
+
 ## Checkpoint Export (Trainer Checkpoint -> Inference Checkpoint)
 
 A trainer checkpoint (`checkpoints/checkpoint.pt`) cannot be passed directly to the

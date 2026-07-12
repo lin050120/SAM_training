@@ -61,7 +61,7 @@ from core.checkpoint_evaluation.selector import (
     select_best,
 )
 from core.checkpoint_export import sha256_of_file
-from core.config import BOOK_ROOT, DEFAULT_SAM3_CHECKPOINT, SAM301_ROOT
+from core.config import BOOK_ROOT, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_PROMPT, SAM301_ROOT
 from core.dataset_identity import resolve_split_identity
 
 AUTO_EVALUATE_AFTER_TRAINING_DEFAULT = False
@@ -77,7 +77,7 @@ class EvaluationConfig:
     train_annotations: Path | None
     test_annotations: Path | None = None
     test_images: Path | None = None
-    prompt: str = "book spine"
+    prompt: str = DEFAULT_TRAINING_PROMPT
     score_threshold: float = 0.3
     confidence_threshold: float = 0.05
     min_area: int = 200

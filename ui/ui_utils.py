@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("book_spine_ui")
+logger = logging.getLogger("sam3_task_ui")
 if not logger.handlers:
     logger.setLevel(logging.INFO)
     _handler = logging.StreamHandler()

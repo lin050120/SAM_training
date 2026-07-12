@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DEFAULT_SAM3_CHECKPOINT
+from core.config import DEFAULT_CATEGORY_NAME, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_PROMPT
 from core.inference_run import migrate_legacy_raw_run, run_sam3_image_directory
 
 
@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--book-root", type=Path, default=Path("/home/book/book01"))
     parser.add_argument("--sam3-root", type=Path, default=Path("/home/book/sam301"))
     parser.add_argument("--checkpoint", "--model-path", dest="checkpoint", type=Path, default=DEFAULT_SAM3_CHECKPOINT)
-    parser.add_argument("--prompt", default="book spine")
+    parser.add_argument("--prompt", default=DEFAULT_TRAINING_PROMPT)
     parser.add_argument("--score-threshold", type=float, default=0.3)
     parser.add_argument("--confidence-threshold", type=float, default=0.05)
     parser.add_argument("--dtype-mode", choices=["bf16", "fp16", "none"], default="bf16")
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nms-metric", choices=["iou", "iomin"], default="iou")
     parser.add_argument("--nms-mode", choices=["suppress", "merge"], default="suppress")
     parser.add_argument("--min-area", type=int, default=200)
-    parser.add_argument("--category-name", default="book_spine")
+    parser.add_argument("--category-name", default=DEFAULT_CATEGORY_NAME)
     return parser.parse_args()
 
 

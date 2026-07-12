@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import socket
 import subprocess
 from dataclasses import asdict, dataclass
@@ -17,6 +18,7 @@ from core.config import (
     DEFAULT_BOOK_SPINE_DATASET_ROOT,
     DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
     DEFAULT_CONDA_ENV,
+    DEFAULT_TASK_SLUG,
     EXPECTED_SAM3_INIT,
     EXPECTED_SAM3_PACKAGE_DIR,
     EXPECTED_SAM3_ROOT,
@@ -60,9 +62,10 @@ class CocoSummary:
     exists: bool
     images: int | None
     annotations: int | None
-    has_book_spine: bool | None
+    has_expected_category: bool | None
     category_names: list[str]
     missing_files: list[str]
+    expected_category_name: str | None = None
     error: str | None = None
 
 
@@ -205,6 +208,16 @@ def _inside_training_output_root(path: Path, root: Path | None = None) -> bool:
         return True
     except ValueError:
         return False
+
+
+def task_slug_from_name(name: str | None) -> str:
+    text = (name or "").strip().lower()
+    if not text:
+        return DEFAULT_TASK_SLUG
+    slug = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    # A non-empty name that slugs to nothing (e.g. fully non-ASCII like "ケーブル")
+    # must not silently reuse the book_spine directories of an unrelated task.
+    return slug or "task"
 
 
 def validate_training_output_root(path: Path, allow_external_output: bool = False) -> str | None:
@@ -488,17 +501,33 @@ def unique_training_run_dir(root: Path) -> Path:
     return candidate
 
 
-def summarize_coco(annotation_path: Path, image_dir: Path) -> CocoSummary:
+def summarize_coco(annotation_path: Path, image_dir: Path, expected_category_name: str | None = None) -> CocoSummary:
     resolved_ann = _resolve_existing_or_absolute(annotation_path)
     if not resolved_ann.exists():
-        return CocoSummary(str(resolved_ann), False, None, None, None, [], [], "COCO file missing")
+        return CocoSummary(
+            str(resolved_ann),
+            False,
+            None,
+            None,
+            None,
+            [],
+            [],
+            expected_category_name=expected_category_name,
+            error="COCO file missing",
+        )
     try:
         data = json.loads(resolved_ann.read_text(encoding="utf-8"))
         images = data.get("images", [])
         annotations = data.get("annotations", [])
         categories = data.get("categories", [])
         category_names = [str(cat.get("name", "")) for cat in categories]
-        has_book_spine = any(name == "book_spine" or name.replace(" ", "_") == "book_spine" for name in category_names)
+        has_expected_category = None
+        if expected_category_name:
+            expected = expected_category_name.strip()
+            expected_slug = task_slug_from_name(expected)
+            has_expected_category = any(
+                name == expected or task_slug_from_name(name) == expected_slug for name in category_names
+            )
         missing = []
         resolved_images = _resolve_existing_or_absolute(image_dir)
         for image in images:
@@ -512,12 +541,23 @@ def summarize_coco(annotation_path: Path, image_dir: Path) -> CocoSummary:
             exists=True,
             images=len(images),
             annotations=len(annotations),
-            has_book_spine=has_book_spine,
+            has_expected_category=has_expected_category,
             category_names=category_names,
             missing_files=missing,
+            expected_category_name=expected_category_name,
         )
     except Exception as exc:
-        return CocoSummary(str(resolved_ann), True, None, None, None, [], [], repr(exc))
+        return CocoSummary(
+            str(resolved_ann),
+            True,
+            None,
+            None,
+            None,
+            [],
+            [],
+            expected_category_name=expected_category_name,
+            error=repr(exc),
+        )
 
 
 def _default_dataset_paths() -> dict[str, Path]:
@@ -568,6 +608,7 @@ def write_runtime_yaml(
     run_dir: Path,
     category_id: int | None = None,
     training_prompt: str | None = None,
+    task_slug: str | None = None,
     max_epochs: int | None = None,
     train_batch_size: int | None = None,
     gradient_accumulation_steps: int | None = None,
@@ -604,7 +645,11 @@ def write_runtime_yaml(
     not silently unfreeze them.
     """
     cfg = OmegaConf.load(base_config)
+    slug = task_slug_from_name(task_slug or training_prompt)
     dataset_root = DEFAULT_BOOK_SPINE_DATASET_ROOT.resolve(strict=False)
+    train_ann = paths.get("train_annotations")
+    if train_ann is not None and train_ann.name == "annotations.json" and train_ann.parent.name in {"train", "training"}:
+        dataset_root = train_ann.parent.parent.resolve(strict=False)
     OmegaConf.update(cfg, "paths.dataset_root", str(dataset_root), merge=False)
     OmegaConf.update(cfg, "paths.experiment_log_dir", str(run_dir), merge=False)
     OmegaConf.update(cfg, "paths.bpe_path", str(paths["bpe_path"]), merge=False)
@@ -617,11 +662,11 @@ def write_runtime_yaml(
         prompt_loader = _prompt_config(category_id, training_prompt)
         OmegaConf.update(cfg, "trainer.data.train.dataset.coco_json_loader", prompt_loader, merge=False)
         OmegaConf.update(cfg, "trainer.data.val.dataset.coco_json_loader", prompt_loader, merge=False)
-    OmegaConf.update(cfg, "trainer.meters.val.book_spine.detection.dump_dir", str(run_dir / "dumps" / "book_spine"), merge=False)
+    OmegaConf.update(cfg, "trainer.meters.val.book_spine.detection.dump_dir", str(run_dir / "dumps" / slug), merge=False)
     OmegaConf.update(cfg, "trainer.meters.val.book_spine.detection.pred_file_evaluators.0.gt_path", str(paths["val_annotations"]), merge=False)
     OmegaConf.update(cfg, "trainer.checkpoint.save_dir", str(run_dir / "checkpoints"), merge=False)
     OmegaConf.update(cfg, "trainer.logging.tensorboard_writer.log_dir", str(run_dir / "tensorboard"), merge=False)
-    OmegaConf.update(cfg, "trainer.logging.log_dir", str(run_dir / "logs" / "book_spine"), merge=False)
+    OmegaConf.update(cfg, "trainer.logging.log_dir", str(run_dir / "logs" / slug), merge=False)
     if max_epochs is not None:
         OmegaConf.update(cfg, "trainer.max_epochs", int(max_epochs), merge=False)
     if train_batch_size is not None:
@@ -711,7 +756,7 @@ def inspect_training_config(
     exists = base_config.exists()
     is_default = _same_file_or_path(base_config, DEFAULT_BOOK_SPINE_FINETUNE_CONFIG)
     warning = None if is_default else (
-        "WARNING: selected config is not the default authoritative book-spine config: "
+        "WARNING: selected config is not the default authoritative SAM3 fine-tuning config: "
         f"{DEFAULT_BOOK_SPINE_FINETUNE_CONFIG}"
     )
     if warning:
@@ -865,11 +910,15 @@ def inspect_training_config(
         if resolved_paths["train_annotations"] == resolved_paths["val_annotations"]:
             warnings.append("train_annotations and val_annotations point to the same COCO file")
 
-        train_coco = summarize_coco(resolved_paths["train_annotations"], resolved_paths["train_images"])
-        val_coco = summarize_coco(resolved_paths["val_annotations"], resolved_paths["val_images"])
-        if train_coco and train_coco.category_names:
+        train_parse_error = None
+        try:
             train_data = json.loads(resolved_paths["train_annotations"].read_text(encoding="utf-8"))
-            first_category = sorted(train_data.get("categories", []), key=lambda item: int(item.get("id", 0)))[0]
+            train_categories = sorted(train_data.get("categories", []), key=lambda item: int(item.get("id", 0)))
+        except Exception as exc:
+            train_parse_error = exc
+            train_categories = []
+        if train_categories:
+            first_category = train_categories[0]
             coco_category_id = int(first_category["id"])
             coco_category_name = str(first_category["name"])
             if training_prompt:
@@ -882,13 +931,26 @@ def inspect_training_config(
             else:
                 resolved_training_prompt = coco_category_name
                 prompt_source = "category_name_fallback"
+        elif train_parse_error is None:
+            errors.append("train COCO has no categories; cannot determine the training category")
+        train_coco = summarize_coco(
+            resolved_paths["train_annotations"],
+            resolved_paths["train_images"],
+            expected_category_name=coco_category_name,
+        )
+        val_coco = summarize_coco(
+            resolved_paths["val_annotations"],
+            resolved_paths["val_images"],
+            expected_category_name=coco_category_name,
+        )
         for label, summary in [("train", train_coco), ("val", val_coco)]:
             if summary.error:
                 errors.append(f"{label} COCO error: {summary.error}")
-            if summary.has_book_spine is False:
-                errors.append(f"{label} COCO categories do not include book_spine")
-            elif summary.category_names and "book_spine" not in summary.category_names:
-                warnings.append(f"{label} COCO uses compatible category alias instead of exact book_spine: {summary.category_names}")
+            if summary.has_expected_category is False:
+                errors.append(
+                    f"{label} COCO categories do not include expected category "
+                    f"{summary.expected_category_name!r}: {summary.category_names}"
+                )
             if summary.missing_files:
                 errors.append(f"{label} COCO has missing image files, first examples: {summary.missing_files[:5]}")
 
@@ -955,7 +1017,8 @@ def inspect_training_config(
                 resolved_paths,
                 run_dir,
                 category_id=coco_category_id,
-                training_prompt=resolved_training_prompt if training_prompt else None,
+                training_prompt=resolved_training_prompt,
+                task_slug=task_slug_from_name(resolved_training_prompt or coco_category_name),
                 max_epochs=validated_max_epochs,
                 train_batch_size=validated_train_batch_size,
                 gradient_accumulation_steps=validated_gradient_accumulation_steps,

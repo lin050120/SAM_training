@@ -8,7 +8,15 @@ from typing import Any, Iterator
 
 import gradio as gr
 
-from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_SAM3_CHECKPOINT, SAM301_ROOT
+from core.config import (
+    BOOK_ROOT,
+    DEFAULT_CATEGORY_NAME,
+    DEFAULT_CONDA_ENV,
+    DEFAULT_DATASET_ROOT,
+    DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_TRAINING_PROMPT,
+    SAM301_ROOT,
+)
 from core.sam_model_registry import discover_inference_models, model_provenance, resolve_model_path
 from ui.process_manager import inference_process_manager
 from ui.ui_utils import (
@@ -305,7 +313,7 @@ def build_inference_tab() -> None:
     )
 
     with gr.Row():
-        input_dir = gr.Textbox(label="input image directory", value=str(BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "test" / "images"))
+        input_dir = gr.Textbox(label="input image directory", value=str(DEFAULT_DATASET_ROOT / "test" / "images"))
         checkpoint = gr.Textbox(label="resolved model path", value=str(DEFAULT_SAM3_CHECKPOINT), interactive=False)
     gr.Markdown("### 模型权重选择")
     with gr.Row():
@@ -329,9 +337,9 @@ def build_inference_tab() -> None:
     model_status = gr.Textbox(label="模型检查结果", interactive=False)
     model_info = gr.Code(label="当前选中模型信息", language="json")
     with gr.Row():
-        prompt = gr.Textbox(label="prompt", value="book spine")
+        prompt = gr.Textbox(label="prompt", value=DEFAULT_TRAINING_PROMPT)
         device = gr.Radio(label="device", choices=["cuda", "cpu"], value="cuda")
-        category_name = gr.Textbox(label="category name", value="book_spine")
+        category_name = gr.Textbox(label="category name", value=DEFAULT_CATEGORY_NAME)
     with gr.Row():
         score_threshold = gr.Number(label="inference threshold (score)", value=0.3, minimum=0.0, maximum=1.0)
         confidence_threshold = gr.Number(label="processor confidence threshold", value=0.05, minimum=0.0, maximum=1.0)

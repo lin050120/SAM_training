@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DEFAULT_BOOK_SPINE_DATASET_ROOT
+from core.config import DEFAULT_DATASET_ROOT, DEFAULT_TRAINING_PROMPT
 from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
 
 
@@ -19,8 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--annotation-pool-dir", required=True, type=Path)
     parser.add_argument("--test-dir", required=True, type=Path)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_BOOK_SPINE_DATASET_ROOT)
-    parser.add_argument("--category-name", default="book spine")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATASET_ROOT)
+    parser.add_argument("--category-name", default=DEFAULT_TRAINING_PROMPT)
     parser.add_argument("--val-ratio", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")

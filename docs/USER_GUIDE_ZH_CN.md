@@ -406,7 +406,7 @@ SMOKE — 数据未经人工审核，非正式训练结果
 | `train COCO` | train COCO | `/home/book/book01/data/formal_book_spine_sam3_dataset/train/annotations.json` |
 | `val images` | val 图片根目录 | `/home/book/book01/data/dataset_raw` 或默认小 smoke 数据 |
 | `val COCO` | val COCO | `/home/book/book01/data/formal_book_spine_sam3_dataset/val/annotations.json` |
-| `training prompt` | SAM3 文本 prompt | `book spine` |
+| `training prompt` | SAM3 文本 prompt，可手动填写新目标，例如 `cable` | `book spine` 或 `cable` |
 | `output root` | 训练输出根目录 | `/home/book/book01/runs/training` |
 | `max_epochs` | epoch 数；当前 smoke 填 1 | `1` |
 | `train batch size` | micro batch size | `1` |
@@ -428,9 +428,9 @@ preflight 会检查：
 
 - 基础 YAML 是否存在；
 - train/val 图片和 COCO 是否存在；
-- COCO category 是否包含 `book_spine`；
+- train COCO 是否有 category，val COCO 是否包含同一个目标 category；
 - missing images；
-- training prompt；
+- training prompt；如果 prompt 与 COCO category 不同，会 warning 但不直接拒绝；
 - `max_epochs`、batch size、gradient accumulation；
 - effective batch size；
 - train 图片数量是否小于 effective batch；
@@ -559,6 +559,12 @@ cat "$RUN/provenance.json"
 cat "$RUN/training_summary.json"
 ls -lh "$RUN/checkpoints"
 tail -n 100 "$RUN/logs/book_spine/log.txt"
+```
+
+如果训练的是非书脊目标，日志目录会按 prompt/category 生成安全 task slug，例如：
+
+```bash
+tail -n 100 "$RUN/logs/cable/log.txt"
 ```
 
 状态含义：
@@ -790,6 +796,10 @@ conda run -n sam301 python scripts/run_unified_inference.py --help
 | `--min-area` | 最小 mask 面积 |
 | `--category-name` | COCO 类名 |
 
+非书脊目标也使用同一入口。例如训练或推理 cable 时，COCO category 建议为
+`cable`，推理 prompt 也传 `--prompt "cable"`；导出的 COCO 类名可用
+`--category-name cable`。
+
 ### 12.1 使用 base checkpoint 推理
 
 ```bash
@@ -913,10 +923,13 @@ dataset_info.json
 training_config_summary.json
 provenance.json
 training_summary.json
-logs/book_spine/log.txt
+logs/<task_slug>/log.txt
 checkpoints/checkpoint.pt
 checkpoints/inference_model.pt
 ```
+
+默认书脊任务的 `<task_slug>` 是 `book_spine`；例如 cable 任务通常是
+`logs/cable/log.txt`。
 
 区分成功和失败：
 
@@ -1224,7 +1237,8 @@ conda run -n sam301 python scripts/export_sam3_inference_checkpoint.py \
 安全处理：
 
 - 看 `training_summary.json.warnings`；
-- 看 `logs/book_spine/log.txt`；
+- 看 `logs/<task_slug>/log.txt`，例如默认书脊任务为 `logs/book_spine/log.txt`，
+  cable 任务通常为 `logs/cable/log.txt`；
 - 不要伪造 checkpoint；
 - 不要把 run 标记为成功验收。
 

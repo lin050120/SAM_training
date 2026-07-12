@@ -85,7 +85,7 @@ def write_json(path: Path, data: Any) -> None:
 
 
 def setup_file_logger(log_path: Path) -> logging.Logger:
-    logger = logging.getLogger(f"book_spine_run.{log_path.parent.parent.name}")
+    logger = logging.getLogger(f"sam3_task_run.{log_path.parent.parent.name}")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
     logger.propagate = False
