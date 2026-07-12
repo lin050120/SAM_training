@@ -185,6 +185,85 @@ class TrainingModeGuardTest(unittest.TestCase):
         self.assertIn("dataset_identity_registry.json", combined)
 
 
+class DatasetRegistryBuilderTest(unittest.TestCase):
+    def _write_split(self, root: Path, split: str, count: int) -> None:
+        split_dir = root / split
+        images_dir = split_dir / "images"
+        images_dir.mkdir(parents=True)
+        images = []
+        annotations = []
+        for idx in range(1, count + 1):
+            file_name = f"im_{idx:06d}.jpg"
+            (images_dir / file_name).write_bytes(f"{split}-{idx}".encode("utf-8"))
+            images.append({"id": idx, "file_name": file_name, "width": 10, "height": 10})
+            annotations.append(
+                {
+                    "id": idx,
+                    "image_id": idx,
+                    "category_id": 1,
+                    "bbox": [1, 1, 5, 5],
+                    "segmentation": [[1, 1, 6, 1, 6, 6, 1, 6]],
+                    "area": 25,
+                    "iscrowd": 0,
+                }
+            )
+        coco = {
+            "images": images,
+            "annotations": annotations,
+            "categories": [{"id": 1, "name": "cable", "supercategory": ""}],
+        }
+        (split_dir / "annotations.json").write_text(json.dumps(coco), encoding="utf-8")
+
+    def test_build_and_register_human_reviewed_dataset_identity(self) -> None:
+        from core.dataset_registry import build_dataset_identity_artifacts, register_dataset_identity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset = root / "cable_sam3_dataset"
+            self._write_split(dataset, "train", 2)
+            self._write_split(dataset, "val", 1)
+            registry = root / "dataset_identity_registry.json"
+            registry.write_text(json.dumps({"schema_version": 1, "datasets": []}), encoding="utf-8")
+            manifests = root / "manifests"
+
+            entry, dataset_manifest, split_manifest = build_dataset_identity_artifacts(
+                dataset_root=dataset,
+                dataset_id="cable_human_corrected_v1",
+                annotation_source="sam3_preannotation_then_human_corrected",
+                annotation_source_evidence="fixture was manually reviewed",
+                human_reviewed=True,
+                independently_corrected_gt=True,
+                allowed_for_formal_training=True,
+                manifests_dir=manifests,
+            )
+
+            self.assertEqual(entry["dataset_id"], "cable_human_corrected_v1")
+            self.assertEqual(entry["splits"]["train"]["image_count"], 2)
+            self.assertEqual(dataset_manifest["total_annotation_count"], 3)
+            self.assertEqual(split_manifest["splits"]["val"]["categories"][0]["name"], "cable")
+
+            result = register_dataset_identity(
+                dataset_root=dataset,
+                dataset_id="cable_human_corrected_v1",
+                annotation_source="sam3_preannotation_then_human_corrected",
+                annotation_source_evidence="fixture was manually reviewed",
+                human_reviewed=True,
+                independently_corrected_gt=True,
+                allowed_for_formal_training=True,
+                registry_path=registry,
+                manifests_dir=manifests,
+            )
+            self.assertTrue(result["ok"])
+            identity = resolve_dataset_identity(
+                dataset / "train" / "annotations.json",
+                dataset / "val" / "annotations.json",
+                registry_path=registry,
+            )
+            self.assertTrue(identity.matched)
+            self.assertTrue(identity.allowed_for_formal_training)
+            self.assertEqual(identity.dataset_id, "cable_human_corrected_v1")
+
+
 @unittest.skipUnless(_FORMAL_DATA_PRESENT, "formal split COCO files not present on this machine")
 class PreflightIdentityIntegrationTest(unittest.TestCase):
     """End-to-end: real inspect_training_config() against the real formal dataset."""

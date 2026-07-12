@@ -398,6 +398,10 @@ SMOKE — 数据未经人工审核，非正式训练结果
 
 或者中文/英文混合的数据身份 warning。
 
+如果你已经有人工审核过的新目标数据集（例如 cable），先到 UI 的
+`数据集登记` Tab 选择数据集根目录并写入登记，再回到 `训练预检` Tab 选择
+`training mode=formal`。具体步骤见 `docs/DATASET_REGISTRATION_UI_CN.md`。
+
 ## 7. Preflight 操作
 
 进入 UI 的 `训练预检` Tab。

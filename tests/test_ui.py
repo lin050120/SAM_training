@@ -23,6 +23,7 @@ TEST_IMAGES_DIR = BOOK_ROOT / "data" / "book_spine_sam3_dataset" / "test" / "ima
 class UiImportsTest(unittest.TestCase):
     def test_import_all_ui_modules(self) -> None:
         import ui.cvat_page  # noqa: F401
+        import ui.dataset_registry_page  # noqa: F401
         import ui.history_page  # noqa: F401
         import ui.inference_page  # noqa: F401
         import ui.process_manager  # noqa: F401
