@@ -6,6 +6,7 @@
 
 - 簡易使用説明と注意事項：[`docs/QUICK_START_JA.md`](docs/QUICK_START_JA.md)
 - 完全な使用説明：[`docs/USER_GUIDE_JA.md`](docs/USER_GUIDE_JA.md)
+- プログラム移行ガイド：[`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)（English: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)，中文: [`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)）
 
 ## ローカル Web UI（ステージ D1 / D1.1 / E1）
 

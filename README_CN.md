@@ -6,6 +6,7 @@
 
 - 简明使用说明与注意事项：[`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)
 - 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
+- 程序迁移说明：[`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)（English: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)，日本語: [`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)）
 
 ## 本地 Web UI（阶段 D1 / D1.1 / E1）
 

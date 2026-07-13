@@ -7,6 +7,7 @@
 
 - 简明使用说明与注意事项：[`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)（日本語: [`docs/QUICK_START_JA.md`](docs/QUICK_START_JA.md)）
 - 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)（日本語: [`docs/USER_GUIDE_JA.md`](docs/USER_GUIDE_JA.md)）
+- Program migration guide: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)（中文: [`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)，日本語: [`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)）
 
 ## Local Web UI (Stage D1 / D1.1 / E1)
 
