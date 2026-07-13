@@ -20,7 +20,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config import DEFAULT_TRAINING_RUN_ROOT  # noqa: E402
-from core.sam301_patch import collect_training_provenance, patch_status, sha256_of_file, verify_patched_for_training  # noqa: E402
+from core.sam301_patch import (  # noqa: E402
+    collect_training_provenance,
+    load_manifest,
+    patch_status,
+    sha256_of_file,
+    verify_patched_for_training,
+)
 
 ORIG_CONTENT = "line one\nline two\nline three\n"
 PATCHED_CONTENT = "line one\nline two (patched)\nline three\n"
@@ -183,6 +189,54 @@ class PatchStatusStatesTest(unittest.TestCase):
             )
             error = verify_patched_for_training(manifest_path)
             self.assertIsNotNone(error)
+            self.assertIn("manifest target", error)
+
+    def test_relative_manifest_target_uses_configured_sam301_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sam301"
+            target = root / "sam3/train/trainer.py"
+            target.parent.mkdir(parents=True)
+            target.write_text(ORIG_CONTENT, encoding="utf-8")
+            patch_file = Path(tmp) / "fix.patch"
+            patch_file.write_text("fixture", encoding="utf-8")
+            manifest_path = Path(tmp) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "patch_id": "relative",
+                        "target_file": "sam3/train/trainer.py",
+                        "patch_file": str(patch_file),
+                        "original_sha256": sha256_of_file(target),
+                        "patched_sha256": "1" * 64,
+                        "expected_patch_root": str(tmp),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("core.sam301_patch.SAM301_ROOT", root):
+                loaded = load_manifest(manifest_path)
+                self.assertEqual(loaded["target_file"], str(target.resolve()))
+                self.assertEqual(patch_status(manifest_path).state, "UNPATCHED")
+
+    def test_relative_manifest_target_cannot_escape_configured_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sam301"
+            root.mkdir()
+            manifest_path = Path(tmp) / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "patch_id": "relative-escape",
+                        "target_file": "../trainer.py",
+                        "patch_file": "x.patch",
+                        "original_sha256": "0" * 64,
+                        "patched_sha256": "1" * 64,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("core.sam301_patch.SAM301_ROOT", root):
+                error = verify_patched_for_training(manifest_path)
             self.assertIn("manifest target", error)
 
     def test_patch_file_outside_expected_patch_root_is_rejected(self) -> None:

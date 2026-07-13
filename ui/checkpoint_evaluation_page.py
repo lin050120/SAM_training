@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 import gradio as gr
 
-from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_TRAINING_RUN_ROOT
+from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_RUN_ROOT
 from core.dataset_identity import resolve_validation_identity
 from core.sam_model_registry import model_provenance, scan_trainer_checkpoints
 from ui.process_manager import ProcessManager
@@ -333,7 +333,7 @@ def export_selected_checkpoint(
         output_path = (output_dir / output_name).resolve(strict=False)
         if output_path == Path(selected.path).resolve(strict=False):
             return "BLOCKED: 输出路径不能等于源 trainer checkpoint", "{}"
-        if output_path.name == "sam3.pt" or str(output_path) == "/home/book/sam301/sam3.pt":
+        if output_path.name == "sam3.pt" or output_path == DEFAULT_SAM3_CHECKPOINT.resolve(strict=False):
             return "BLOCKED: 不允许覆盖原始 sam3.pt", "{}"
         if output_path.exists() and not overwrite:
             return f"BLOCKED: 输出文件已存在，默认不覆盖: {output_path}", "{}"

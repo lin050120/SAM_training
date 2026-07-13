@@ -1,13 +1,12 @@
 {
   "patch_id": "sam301-trainer-grad-accum-loss-scaling",
-  "version": 1,
+  "version": 2,
   "purpose": "Gradient accumulation loss scaling: sam3/train/trainer.py _run_step must scale ONLY the backward loss by 1/accum_steps when gradient_accumulation_steps > 1, so accumulating N micro-batch gradients equals the gradient of the MEAN loss over those micro-batches (true effective-batch semantics at unchanged learning rate). Logged losses and the finite-check keep the raw unscaled value; optimizer/scheduler/clipping timing is unchanged; accum=1 is bit-for-bit identical. Without this patch, accum>1 sums gradients (~N x magnitude).",
-  "target_file": "/home/book/sam301/sam3/train/trainer.py",
+  "target_file": "sam3/train/trainer.py",
   "patch_file": "patches/sam301_trainer_grad_accum_loss_scaling.patch",
   "patch_file_sha256": "f28588dda179af4133ead23a7ceed2c4615822f420fa83eade282e4775caa85d",
   "original_sha256": "9c9c4159d2d5e799159cf6c855fc9be6f81c607fa2614cf570130da6159e248d",
   "patched_sha256": "bcf5d8d6970ffd8fda609c92b14f9beda475576180262d5e5483523020609ec2",
-  "expected_sam3_root": "/home/book/sam301",
   "hash_provenance": "original_sha256 verified three independent ways (pre-patch backup, patch -R reverse-application of patch_file onto the current file, and docs/CODEX_FINAL_REVIEW_OF_LOSS_SCALING_FIX.md); patched_sha256 verified from the live file and reproduced independently by Codex applying patch_file onto the reconstructed original; patch_file_sha256 matches the Codex review record.",
   "applied_in_commit_record": "81f79d5 (book01 patch archive); /home/book/sam301 itself is not a git repository"
 }

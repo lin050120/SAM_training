@@ -5,32 +5,58 @@ GitHub 上の `book01` リポジトリには、業務コード、設定、manife
 のみが含まれます。学習データ、画像、重み、過去の run、SAM3 ソースコード、
 conda 環境は別途用意する必要があります。
 
-## 1. 推奨ディレクトリ構成
+## 1. パスの自動設定
 
-最も安全なのは、移行先でも現在と同じパスを使うことです。
+新 PC のディレクトリは旧 PC と同じである必要はありません。`book01`、`sam301`、
+および `sam301` conda 環境を準備した後、新しい `book01` で実行します。
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py
+```
+
+2 つのフォルダ選択画面で、新しい `book01`、次に `sam301` を選択します。スクリプトは
+必要なコード、SAM3 ソース、学習 YAML、BPE、`sam3.pt` を検証し、
+`config/local_paths.json` を生成します。また SAM3 の import 元、trainer patch、CUDA
+を確認し、editable install または既知の patch が必要な場合は実行前に確認します。
+UNKNOWN 状態の trainer は自動変更しません。
+
+本機専用の設定と `config/migration_report.json` は Git の対象外です。既存の設定は
+`config/local_paths.<timestamp>.bak.json` にバックアップされます。
+
+注意：新しい場所の `book01` では、移行ウィザードを実行して
+`config/local_paths.json` が生成されるまでプログラムは起動を拒否し、旧 PC の
+パスを黙って使う代わりに `scripts/migrate_environment.py` の実行を促す
+エラーを表示します。
+
+コマンドラインでも指定できます。
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py \
+  --book-root "/new/path/book01" \
+  --sam301-root "/new/path/sam301"
+```
+
+書き込み、再インストール、patch 適用を行わない事前確認：
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py \
+  --book-root "/new/path/book01" \
+  --sam301-root "/new/path/sam301" \
+  --dry-run
+```
+
+非対話モードでは 2 つのパスが必須です。修復も許可する場合は
+`--repair-install --apply-patch` を明示的に追加します。
+
+本機設定がない場合は、互換性のため次の旧デフォルトが使われます。
 
 ```text
 /home/book/book01
 /home/book/sam301
 ```
 
-現在の重要なパスは以下に定義されています。
-
-```text
-/home/book/book01/core/config.py
-```
-
-内容：
-
-```python
-BOOK_ROOT = Path("/home/book/book01")
-SAM301_ROOT = Path("/home/book/sam301")
-```
-
-移行先でパスを変える場合は、少なくとも `core/config.py` を修正してください。
-また `config/sam301_patch_manifest.json` にも `/home/book/sam301` が記録されて
-いるため、パスを変えた場合は同時に確認が必要です。そうしないと patch guard が
-失敗します。
+`core/config.py` を手動で編集しないでください。production patch manifest の trainer
+パスは SAM301 root からの相対パスになっているため、PC のパス変更では編集不要です。
 
 ## 2. GitHub からプロジェクトを取得
 
@@ -98,6 +124,8 @@ GitHub の `book01` には SAM3 ソースコードは含まれません。SAM3 �
 ## 5. SAM3 パッケージをインストール
 
 `sam301` 環境が `/home/book/sam301` から SAM3 を import できるようにします。
+自動移行スクリプトはこの状態を検査し、誤っている場合は確認後に editable install を
+修復します。以下は手動対応が必要な場合のコマンドです。
 
 ```bash
 cd /home/book/sam301
@@ -124,6 +152,9 @@ env -u PYTHONPATH conda run -n sam301 python -c \
 このプロジェクトでは `/home/book/sam301/sam3/train/trainer.py` に
 gradient accumulation の loss scaling patch が必要です。学習 preflight、launcher、
 学習 subprocess はすべてこの patch を fail-closed で検証します。
+
+自動移行スクリプトは UNPATCHED の場合だけ確認後に適用します。UNKNOWN の場合は
+ファイルを上書きせず、手動確認を要求します。
 
 `/home/book/book01` で実行：
 
@@ -249,5 +280,4 @@ GitHub のコードだけでは不十分です。新 PC には以下が必要で
 - trainer patch の検証成功
 - 学習/推論データとモデルファイル
 - GPU/CUDA が正常
-- パスを変える場合は `core/config.py` と patch manifest の関連パスを修正
-
+- `scripts/migrate_environment.py` で本機パス設定を生成

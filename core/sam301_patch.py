@@ -1,10 +1,4 @@
-"""SAM301 trainer patch integrity: manifest loading, hashing, status classification.
-
-/home/book/sam301 is not a git tree, so the grad-accum loss-scaling patch applied to
-sam3/train/trainer.py is pinned here by full SHA256 (original and patched) recorded
-in a git-tracked manifest. Everything that launches real training must require
-state == PATCHED and fail closed otherwise.
-"""
+"""SAM301 trainer patch integrity: manifest loading, hashing, status classification."""
 
 from __future__ import annotations
 
@@ -15,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from core.config import BOOK_ROOT
+from core.config import BOOK_ROOT, SAM301_ROOT
 
 DEFAULT_MANIFEST_PATH = BOOK_ROOT / "config" / "sam301_patch_manifest.json"
 
@@ -60,17 +54,26 @@ def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:
         "patch_file",
         "original_sha256",
         "patched_sha256",
-        "expected_sam3_root",
     ):
         if not data.get(key):
             raise ValueError(f"sam301 patch manifest is missing required field: {key}")
-    target = Path(data["target_file"]).expanduser().resolve(strict=False)
-    expected_root = Path(data["expected_sam3_root"]).expanduser().resolve(strict=False)
+    raw_target = Path(str(data["target_file"])).expanduser()
+    if raw_target.is_absolute():
+        if not data.get("expected_sam3_root"):
+            raise ValueError("absolute manifest target requires expected_sam3_root")
+        expected_root = Path(data["expected_sam3_root"]).expanduser().resolve(strict=False)
+        target = raw_target.resolve(strict=False)
+    else:
+        expected_root = SAM301_ROOT.expanduser().resolve(strict=False)
+        target = (expected_root / raw_target).resolve(strict=False)
     if _resolved_inside(target, FORBIDDEN_TARGET_ROOT):
         raise ValueError(f"manifest target must never point into {FORBIDDEN_TARGET_ROOT}: {target}")
     if not _resolved_inside(target, expected_root):
         raise ValueError(f"manifest target must remain under {expected_root}: {target}")
-    return data
+    normalized = dict(data)
+    normalized["target_file"] = str(target)
+    normalized["expected_sam3_root"] = str(expected_root)
+    return normalized
 
 
 def resolve_patch_file(manifest: dict[str, Any], manifest_path: Path | None = None) -> Path:
@@ -198,13 +201,13 @@ def verify_patched_for_training(manifest_path: Path | None = None) -> str | None
     except Exception as exc:
         return (
             f"sam301 patch manifest could not be evaluated ({exc!r}); refusing to train. "
-            "Check /home/book/book01/config/sam301_patch_manifest.json"
+            f"Check {DEFAULT_MANIFEST_PATH}"
         )
     if status.state == STATE_PATCHED:
         return None
     fix_hint = {
         STATE_UNPATCHED: "apply it with: conda run -n sam301 python scripts/manage_sam301_patch.py apply",
-        STATE_MISSING: "the target file does not exist; restore /home/book/sam301 first",
+        STATE_MISSING: f"the target file does not exist; restore {SAM301_ROOT} first",
         STATE_UNKNOWN: (
             "the file matches neither the original nor the patched hash; do NOT force-overwrite — "
             "inspect it manually (see docs/SAM301_PATCH_MANAGEMENT.md)"

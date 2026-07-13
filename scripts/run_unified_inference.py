@@ -8,7 +8,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DEFAULT_CATEGORY_NAME, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_PROMPT
+from core.config import (
+    BOOK_ROOT,
+    DEFAULT_CATEGORY_NAME,
+    DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_TRAINING_PROMPT,
+    SAM301_ROOT,
+)
 from core.inference_run import migrate_legacy_raw_run, run_sam3_image_directory
 
 
@@ -17,9 +23,9 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--legacy-raw-run", type=Path, help="Existing ft_01 dataset_raw run directory.")
     mode.add_argument("--input-dir", type=Path, help="Input image directory for real SAM3 inference.")
-    parser.add_argument("--output-root", type=Path, default=Path("/home/book/book01/runs"))
-    parser.add_argument("--book-root", type=Path, default=Path("/home/book/book01"))
-    parser.add_argument("--sam3-root", type=Path, default=Path("/home/book/sam301"))
+    parser.add_argument("--output-root", type=Path, default=BOOK_ROOT / "runs")
+    parser.add_argument("--book-root", type=Path, default=BOOK_ROOT)
+    parser.add_argument("--sam3-root", type=Path, default=SAM301_ROOT)
     parser.add_argument("--checkpoint", "--model-path", dest="checkpoint", type=Path, default=DEFAULT_SAM3_CHECKPOINT)
     parser.add_argument("--prompt", default=DEFAULT_TRAINING_PROMPT)
     parser.add_argument("--score-threshold", type=float, default=0.3)

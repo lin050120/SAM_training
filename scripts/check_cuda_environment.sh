@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SAM301_ROOT="$(cd "${PROJECT_ROOT}" && conda run -n sam301 python -c 'from core.config import SAM301_ROOT; print(SAM301_ROOT)' 2>/dev/null | tail -n 1)"
+
 echo "=== host/user ==="
 hostname
 whoami
@@ -46,4 +50,4 @@ conda run -n sam301 python -c 'import torch; print(torch.__config__.show())' || 
 
 echo
 echo "=== sam3 import ==="
-PYTHONPATH=/home/book/sam301 conda run -n sam301 python -c 'import sam3; print("sam3_file:", sam3.__file__)' || true
+PYTHONPATH="${SAM301_ROOT}" conda run -n sam301 python -c 'import sam3; print("sam3_file:", sam3.__file__)' || true

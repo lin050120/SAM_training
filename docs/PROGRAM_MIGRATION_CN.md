@@ -4,31 +4,66 @@
 `book01` 仓库只包含业务代码、配置、manifest 和文档；训练数据、图片、权重、
 历史 run、SAM3 源码和 conda 环境需要另外准备。
 
-## 1. 推荐目录结构
+## 1. 自动路径配置
 
-最稳妥的方式是在新电脑保持和当前机器相同的路径：
+新电脑上的目录不需要和旧电脑相同。准备好 `book01`、`sam301` 和名为
+`sam301` 的 conda 环境后，在新 `book01` 目录运行：
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py
+```
+
+脚本会弹出两个文件夹选择窗口，依次选择新的 `book01` 和 `sam301`。确认后脚本会：
+
+- 验证项目代码、SAM3 源码、训练 YAML、BPE 和 `sam3.pt`；
+- 生成本机专用的 `config/local_paths.json`；
+- 检查 `import sam3` 是否来自新目录，错误时询问是否修复 editable install；
+- 检查 trainer patch，UNPATCHED 时询问是否应用，UNKNOWN 时停止自动修改；
+- 检查 CUDA，并把结果写入 `config/migration_report.json`。
+
+这两个文件都被 Git 忽略，不会把一台电脑的绝对路径上传到 GitHub。已有配置覆盖前会
+生成 `config/local_paths.<时间>.bak.json`。
+
+注意：在新位置的 `book01` 中，如果还没有运行迁移向导（即没有
+`config/local_paths.json`），程序会直接报错并提示先运行
+`scripts/migrate_environment.py`，而不是继续使用旧电脑的路径。
+
+也可以直接使用命令行：
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py \
+  --book-root "/新的路径/book01" \
+  --sam301-root "/新的路径/sam301"
+```
+
+建议先预演，预演不会写文件、重装包或应用 patch：
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py \
+  --book-root "/新的路径/book01" \
+  --sam301-root "/新的路径/sam301" \
+  --dry-run
+```
+
+无人值守模式必须显式提供两个目录。需要允许修复时再增加
+`--repair-install` 和 `--apply-patch`：
+
+```bash
+conda run -n sam301 python scripts/migrate_environment.py \
+  --book-root "/新的路径/book01" \
+  --sam301-root "/新的路径/sam301" \
+  --non-interactive --repair-install --apply-patch
+```
+
+程序没有本机配置时仍兼容以下旧默认目录：
 
 ```text
 /home/book/book01
 /home/book/sam301
 ```
 
-当前项目的关键路径写在：
-
-```text
-/home/book/book01/core/config.py
-```
-
-其中：
-
-```python
-BOOK_ROOT = Path("/home/book/book01")
-SAM301_ROOT = Path("/home/book/sam301")
-```
-
-如果新电脑路径不同，至少要修改 `core/config.py`。另外
-`config/sam301_patch_manifest.json` 里也记录了 `/home/book/sam301`，路径变化时
-需要同步处理，否则 patch guard 会失败。
+不要手工修改 `core/config.py`。生产 patch manifest 使用相对 SAM301 根目录的 trainer
+路径，也不需要因电脑路径变化而修改。
 
 ## 2. 从 GitHub 下载项目代码
 
@@ -97,6 +132,9 @@ GitHub 的 `book01` 仓库不包含 SAM3 源码。你需要把 SAM3 放在：
 
 让 `sam301` 环境从 `/home/book/sam301` import SAM3：
 
+自动迁移脚本会执行这项检查，并在路径错误时先征得确认再运行无依赖的 editable
+install。以下命令用于需要手工处理时：
+
 ```bash
 cd /home/book/sam301
 conda run -n sam301 pip install -e ".[train,dev]"
@@ -121,6 +159,9 @@ env -u PYTHONPATH conda run -n sam301 python -c \
 
 本项目要求 `/home/book/sam301/sam3/train/trainer.py` 带有梯度累积 loss scaling
 补丁。训练预检、启动器和训练子进程都会 fail closed 检查这个补丁。
+
+自动迁移脚本会检查该状态，并只在状态为 UNPATCHED 且得到确认时应用。UNKNOWN
+表示文件既不匹配原始哈希也不匹配补丁哈希，脚本一定不会覆盖。
 
 在 `/home/book/book01` 下执行：
 
@@ -244,5 +285,4 @@ conda run -n sam301 pytest -q tests
 - trainer patch 验证通过
 - 训练/推理数据和模型文件
 - GPU/CUDA 正常
-- 如路径不同，修改 `core/config.py` 和 patch manifest 相关路径
-
+- 运行 `scripts/migrate_environment.py` 生成本机路径配置

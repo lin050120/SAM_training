@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.machine_config import load_machine_paths
 
-BOOK_ROOT = Path("/home/book/book01")
-SAM301_ROOT = Path("/home/book/sam301")
+
+MACHINE_PATHS = load_machine_paths()
+BOOK_ROOT = MACHINE_PATHS.book_root
+SAM301_ROOT = MACHINE_PATHS.sam301_root
 
 DEFAULT_TASK_SLUG = "book_spine"
 DEFAULT_CATEGORY_NAME = "book_spine"
