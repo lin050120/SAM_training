@@ -25,6 +25,7 @@ from core.config import (
     EXPECTED_SAM3_PACKAGE_DIR,
     EXPECTED_SAM3_ROOT,
     DEFAULT_TRAINING_RUN_ROOT,
+    SAM301_ROOT,
 )
 
 REAL_CONFIG_EXISTS = DEFAULT_BOOK_SPINE_FINETUNE_CONFIG.exists()
@@ -248,9 +249,9 @@ class OptionalTrainingFieldParserTest(unittest.TestCase):
 class Sam301EnvironmentMigrationTest(unittest.TestCase):
     def test_default_environment_and_expected_root(self) -> None:
         self.assertEqual(DEFAULT_CONDA_ENV, "sam301")
-        self.assertEqual(EXPECTED_SAM3_ROOT, Path("/home/book/sam301"))
-        self.assertEqual(EXPECTED_SAM3_PACKAGE_DIR, Path("/home/book/sam301/sam3"))
-        self.assertEqual(EXPECTED_SAM3_INIT, Path("/home/book/sam301/sam3/__init__.py"))
+        self.assertEqual(EXPECTED_SAM3_ROOT, SAM301_ROOT)
+        self.assertEqual(EXPECTED_SAM3_PACKAGE_DIR, SAM301_ROOT / "sam3")
+        self.assertEqual(EXPECTED_SAM3_INIT, SAM301_ROOT / "sam3" / "__init__.py")
 
     def test_training_command_uses_sam301_environment(self) -> None:
         from core.training_runner import inspect_training_config
@@ -258,21 +259,21 @@ class Sam301EnvironmentMigrationTest(unittest.TestCase):
         preflight = inspect_training_config(output_root=DEFAULT_TRAINING_RUN_ROOT, prepare_runtime=False)
         self.assertEqual(preflight.conda_environment, "sam301")
         self.assertEqual(preflight.command[:4], ["conda", "run", "-n", "sam301"])
-        self.assertEqual(preflight.expected_sam3_root, "/home/book/sam301")
+        self.assertEqual(preflight.expected_sam3_root, str(EXPECTED_SAM3_ROOT))
 
     def test_training_subprocess_env_prefixes_expected_root_and_preserves_existing(self) -> None:
         from core.training_runner import training_subprocess_env
 
         original = {"PYTHONPATH": "/tmp/custom", "OTHER": "1"}
         env = training_subprocess_env(original)
-        self.assertEqual(env["PYTHONPATH"], "/home/book/sam301:/tmp/custom")
+        self.assertEqual(env["PYTHONPATH"], f"{EXPECTED_SAM3_ROOT}:/tmp/custom")
         self.assertEqual(original["PYTHONPATH"], "/tmp/custom")
         self.assertEqual(env["OTHER"], "1")
 
     def test_validate_sam3_import_path_accepts_expected_init(self) -> None:
         from core.training_runner import validate_sam3_import_path
 
-        self.assertIsNone(validate_sam3_import_path("/home/book/sam301/sam3/__init__.py"))
+        self.assertIsNone(validate_sam3_import_path(str(EXPECTED_SAM3_INIT)))
 
     def test_validate_sam3_import_path_rejects_old_and_external_paths(self) -> None:
         from core.training_runner import validate_sam3_import_path
@@ -359,6 +360,93 @@ def _load_launcher_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _write_launcher_guard_fixture(base: Path, *, legacy_manifest: bool = False) -> tuple[Path, Path]:
+    import hashlib
+
+    project = base / "book01"
+    sam301 = base / "sam301"
+    trainer = sam301 / "sam3/train/trainer.py"
+    trainer.parent.mkdir(parents=True)
+    trainer.write_text("patched trainer fixture\n", encoding="utf-8")
+    patch_file = project / "patches/fix.patch"
+    patch_file.parent.mkdir(parents=True)
+    patch_file.write_text("patch fixture\n", encoding="utf-8")
+    config_dir = project / "config"
+    config_dir.mkdir(parents=True)
+    manifest = {
+        "patch_id": "launcher-fixture",
+        "target_file": str(trainer) if legacy_manifest else "sam3/train/trainer.py",
+        "patch_file": "patches/fix.patch",
+        "patch_file_sha256": hashlib.sha256(patch_file.read_bytes()).hexdigest(),
+        "original_sha256": "0" * 64,
+        "patched_sha256": hashlib.sha256(trainer.read_bytes()).hexdigest(),
+    }
+    if legacy_manifest:
+        manifest["expected_sam3_root"] = str(sam301)
+    else:
+        (config_dir / "local_paths.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "book_root": str(project),
+                    "sam301_root": str(sam301),
+                }
+            ),
+            encoding="utf-8",
+        )
+    (config_dir / "sam301_patch_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return project, trainer
+
+
+class LauncherPatchGuardRegressionTest(unittest.TestCase):
+    def test_v2_relative_manifest_uses_local_machine_config(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _trainer = _write_launcher_guard_fixture(Path(tmp))
+            launcher._verify_sam301_patch_or_die(project)
+
+    def test_v1_absolute_manifest_remains_supported(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _trainer = _write_launcher_guard_fixture(Path(tmp), legacy_manifest=True)
+            launcher._verify_sam301_patch_or_die(project)
+
+    def test_v2_guard_rejects_tampered_trainer(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, trainer = _write_launcher_guard_fixture(Path(tmp))
+            trainer.write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "sha256=.*expected patched"):
+                launcher._verify_sam301_patch_or_die(project)
+
+    def test_v2_guard_without_local_config_on_moved_checkout_requires_migration(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _trainer = _write_launcher_guard_fixture(Path(tmp))
+            (project / "config/local_paths.json").unlink()
+            with self.assertRaisesRegex(SystemExit, "migrate_environment"):
+                launcher._verify_sam301_patch_or_die(project)
+
+    def test_v2_guard_rejects_stale_local_book_root(self) -> None:
+        launcher = _load_launcher_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _trainer = _write_launcher_guard_fixture(Path(tmp))
+            local_config = project / "config/local_paths.json"
+            data = json.loads(local_config.read_text(encoding="utf-8"))
+            data["book_root"] = str(project / "old-location")
+            local_config.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "local machine-path config points to"):
+                launcher._verify_sam301_patch_or_die(project)
+
+    @unittest.skipUnless(
+        (EXPECTED_SAM3_ROOT / "sam3/train/trainer.py").is_file(),
+        "real SAM301 trainer not present",
+    )
+    def test_production_v2_manifest_guard_passes(self) -> None:
+        launcher = _load_launcher_module()
+        launcher._verify_sam301_patch_or_die()
 
 
 class HydraLaunchRegressionTest(unittest.TestCase):
@@ -543,7 +631,7 @@ class HydraLaunchRegressionTest(unittest.TestCase):
         self.assertIn("--validate-only", command)
         guard_command = build_sam3_import_guard_command()
         self.assertEqual(guard_command[:4], ["conda", "run", "-n", "sam301"])
-        self.assertEqual(EXPECTED_SAM3_INIT, Path("/home/book/sam301/sam3/__init__.py"))
+        self.assertEqual(EXPECTED_SAM3_INIT, SAM301_ROOT / "sam3" / "__init__.py")
 
 
 @unittest.skipUnless(_TRAINING_FIXTURES_AVAILABLE, "real base config/checkpoint/dataset not present")
@@ -1363,10 +1451,10 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         self.assertIn("status=completed", result[-1][0])
         summary = json.loads((Path(state["run_dir"]) / "training_summary.json").read_text(encoding="utf-8"))
         self.assertEqual(summary["conda_environment"], "sam301")
-        self.assertEqual(summary["expected_sam3_root"], "/home/book/sam301")
+        self.assertEqual(summary["expected_sam3_root"], str(EXPECTED_SAM3_ROOT))
         self.assertEqual(summary["resolved_sam3_import_path"], str(EXPECTED_SAM3_INIT))
         self.assertTrue(summary["sam3_import_guard_ok"])
-        self.assertTrue(summary["effective_pythonpath"].startswith("/home/book/sam301"))
+        self.assertTrue(summary["effective_pythonpath"].startswith(str(EXPECTED_SAM3_ROOT)))
 
     def test_distributed_port_failure_blocks_without_consuming_or_spawning(self) -> None:
         state = self._state("port_failure")
@@ -1860,7 +1948,7 @@ class TrainingOutputConfinementTest(unittest.TestCase):
             self.base / "runs" / "training_evil",
             self.allowed_root / ".." / ".." / "data",
             self.base / "tmp_training",
-            Path("/home/book/sam301"),
+            EXPECTED_SAM3_ROOT,
             Path("/home/book/book"),
             DEFAULT_BOOK_SPINE_DATASET_ROOT,
             DEFAULT_SAM3_CHECKPOINT.parent,

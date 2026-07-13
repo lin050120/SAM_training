@@ -23,6 +23,11 @@ from argparse import Namespace
 from pathlib import Path
 
 
+LEGACY_BOOK_ROOT = Path("/home/book/book01")
+LEGACY_SAM301_ROOT = Path("/home/book/sam301")
+FORBIDDEN_SAM3_ROOT = Path("/home/book/sam3")
+
+
 def resolve_config_target(config_path: str | Path) -> tuple[str, str]:
     """Map an absolute runtime YAML path to (hydra config_dir, config_name)."""
     resolved = Path(config_path).expanduser().resolve()
@@ -54,7 +59,55 @@ def compose_runtime_config(config_path: str | Path):
     return cfg
 
 
-def _verify_sam301_patch_or_die() -> None:
+def _configured_sam301_root(project_root: Path) -> Path:
+    """Resolve SAM301 without importing book01 modules inside the train process."""
+    import json
+
+    local_config = project_root / "config" / "local_paths.json"
+    if not local_config.exists():
+        if project_root == LEGACY_BOOK_ROOT.resolve(strict=False):
+            return LEGACY_SAM301_ROOT.resolve(strict=False)
+        raise ValueError(
+            f"no config/local_paths.json for checkout {project_root}; "
+            "run: conda run -n sam301 python scripts/migrate_environment.py"
+        )
+    data = json.loads(local_config.read_text(encoding="utf-8"))
+    if data.get("schema_version") != 1:
+        raise ValueError(f"unsupported local machine-path config version: {local_config}")
+    configured_book_root = Path(str(data["book_root"])).expanduser()
+    configured_sam301_root = Path(str(data["sam301_root"])).expanduser()
+    if not configured_book_root.is_absolute() or not configured_sam301_root.is_absolute():
+        raise ValueError(f"local machine paths must be absolute: {local_config}")
+    if configured_book_root.resolve(strict=False) != project_root:
+        raise ValueError(
+            f"local machine-path config points to {configured_book_root.resolve(strict=False)}, "
+            f"but this checkout is {project_root}"
+        )
+    return configured_sam301_root.resolve(strict=False)
+
+
+def _resolve_guard_target(project_root: Path, manifest: dict) -> tuple[Path, Path]:
+    """Resolve both v1 absolute and v2 SAM301-relative manifest targets."""
+    raw_target = Path(str(manifest["target_file"])).expanduser()
+    if raw_target.is_absolute():
+        if not manifest.get("expected_sam3_root"):
+            raise ValueError("absolute manifest target requires expected_sam3_root")
+        expected_root = Path(str(manifest["expected_sam3_root"])).expanduser().resolve(strict=False)
+        target = raw_target.resolve(strict=False)
+    else:
+        expected_root = _configured_sam301_root(project_root)
+        target = (expected_root / raw_target).resolve(strict=False)
+    target.relative_to(expected_root)
+    try:
+        target.relative_to(FORBIDDEN_SAM3_ROOT.resolve(strict=False))
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"target points into forbidden old SAM3 root: {target}")
+    return expected_root, target
+
+
+def _verify_sam301_patch_or_die(project_root: Path | None = None) -> None:
     """Last-line fail-closed guard inside the actual training subprocess.
 
     Stdlib-only re-implementation of the manifest hash check (this script must not
@@ -64,24 +117,16 @@ def _verify_sam301_patch_or_die() -> None:
     import hashlib
     import json
 
-    manifest_path = Path(__file__).resolve().parent.parent / "config" / "sam301_patch_manifest.json"
+    root = (project_root or Path(__file__).resolve().parent.parent).expanduser().resolve(strict=False)
+    manifest_path = root / "config" / "sam301_patch_manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected_root = Path(manifest["expected_sam3_root"]).expanduser().resolve(strict=False)
-        forbidden_root = Path("/home/book/sam3").expanduser().resolve(strict=False)
-        patch_root = (Path(__file__).resolve().parent.parent / "patches").resolve(strict=False)
-        target = Path(manifest["target_file"]).expanduser().resolve(strict=False)
+        _expected_root, target = _resolve_guard_target(root, manifest)
+        patch_root = (root / "patches").resolve(strict=False)
         patch_file = Path(manifest["patch_file"])
         if not patch_file.is_absolute():
-            patch_file = manifest_path.parent.parent / patch_file
+            patch_file = root / patch_file
         patch_file = patch_file.expanduser().resolve(strict=False)
-        target.relative_to(expected_root)
-        try:
-            target.relative_to(forbidden_root)
-        except ValueError:
-            pass
-        else:
-            raise ValueError(f"target points into forbidden old SAM3 root: {target}")
         patch_file.relative_to(patch_root)
         expected_patch = manifest.get("patch_file_sha256")
         if expected_patch and hashlib.sha256(patch_file.read_bytes()).hexdigest() != expected_patch:

@@ -19,7 +19,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import DEFAULT_TRAINING_RUN_ROOT  # noqa: E402
+from core.config import (  # noqa: E402
+    DEFAULT_BOOK_SPINE_FINETUNE_CONFIG,
+    DEFAULT_SAM3_CHECKPOINT,
+    DEFAULT_TRAINING_RUN_ROOT,
+)
 from core.sam301_patch import (  # noqa: E402
     collect_training_provenance,
     load_manifest,
@@ -387,8 +391,7 @@ class ApplyRevertRoundtripTest(unittest.TestCase):
 
 
 _TRAINING_FIXTURES_AVAILABLE = (
-    Path("/home/book/sam301/sam3/train/configs/book_spine/book_spine_finetune.yaml").exists()
-    and Path("/home/book/sam301/sam3.pt").exists()
+    DEFAULT_BOOK_SPINE_FINETUNE_CONFIG.exists() and DEFAULT_SAM3_CHECKPOINT.exists()
 )
 
 
