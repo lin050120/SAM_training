@@ -166,6 +166,7 @@ JA: dict[str, str] = {
     "### 阶段 B: 启动训练": "### ステージ B: 学習開始",
     "我确认这将启动 GPU 训练任务。": "これが GPU 学習タスクを開始することを確認しました。",
     "启动训练": "学習開始",
+    "暂停训练并释放显存": "学習を一時停止して GPU メモリを解放",
     "停止训练": "学習停止",
     "训练任务状态": "学習タスク状態",
     "监控信息 (run_id/pid/pgid/started_at/elapsed/exit_code/output_dir/checkpoint_dir/"
@@ -174,6 +175,13 @@ JA: dict[str, str] = {
         "discovered checkpoints/epoch/loss/lr/gpu memory — 指標解析は best-effort、"
         "解析できない場合は unavailable と表示)",
     "training_summary.json (训练结束后生成)": "training_summary.json（学習終了後に生成）",
+    "### 阶段 C: 从最近完整 Checkpoint 恢复": "### ステージ C: 最新の完全な Checkpoint から再開",
+    "训练 run（含 checkpoint.pt）": "学習 run（checkpoint.pt を含む）",
+    "刷新可恢复 run": "再開可能な run を更新",
+    "恢复预检信息": "再開プリフライト情報",
+    "我确认将从最近完整 checkpoint 恢复；当前 epoch 未保存的进度会丢失。":
+        "最新の完全な checkpoint から再開し、現在の epoch の未保存進捗が失われることを確認しました。",
+    "恢复训练": "学習を再開",
 
     # ---- dataset registry page ----
     "登记已经人工审核的数据集。登记后，训练预检会按 train/val COCO 路径匹配 registry；"

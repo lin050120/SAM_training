@@ -1217,6 +1217,131 @@ class ValidateCanStartTrainingTest(unittest.TestCase):
         self.assertTrue(any("training_summary.json" in r and "拒绝复用" in r for r in reasons))
 
 
+class ResumableTrainingRunTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self.tmp.name) / "run1"
+        self.runtime_yaml = self.run_dir / "config" / "runtime_config.yaml"
+        self.checkpoint = self.run_dir / "checkpoints" / "checkpoint.pt"
+        self.initial_checkpoint = self.run_dir / "sam3.pt"
+        self.bpe_path = self.run_dir / "bpe.txt.gz"
+        self.runtime_yaml.parent.mkdir(parents=True)
+        self.checkpoint.parent.mkdir(parents=True)
+        self.checkpoint.write_bytes(b"complete checkpoint")
+        self.initial_checkpoint.write_bytes(b"base checkpoint")
+        self.bpe_path.write_bytes(b"bpe")
+        self.runtime_yaml.write_text(
+            "paths:\n"
+            f"  bpe_path: {self.bpe_path}\n"
+            "trainer:\n"
+            "  max_epochs: 1\n"
+            "  model:\n"
+            f"    checkpoint_path: {self.initial_checkpoint}\n"
+            "  checkpoint:\n"
+            f"    save_dir: {self.checkpoint.parent}\n",
+            encoding="utf-8",
+        )
+        self.train_images = self.run_dir / "train_images"
+        self.val_images = self.run_dir / "val_images"
+        self.train_images.mkdir()
+        self.val_images.mkdir()
+        self.train_annotations = self.run_dir / "train.json"
+        self.val_annotations = self.run_dir / "val.json"
+        self.train_annotations.write_text("{}", encoding="utf-8")
+        self.val_annotations.write_text("{}", encoding="utf-8")
+        (self.run_dir / "training_config_summary.json").write_text(
+            json.dumps(
+                {
+                    "num_gpus": 1,
+                    "max_epochs": 1,
+                    "training_mode": "smoke",
+                    "resolved_training_prompt": "cable",
+                    "initial_checkpoint": str(self.initial_checkpoint),
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.run_dir / "dataset_info.json").write_text(
+            json.dumps(
+                {
+                    "train_images": str(self.train_images),
+                    "train_annotations": str(self.train_annotations),
+                    "val_images": str(self.val_images),
+                    "val_annotations": str(self.val_annotations),
+                    "training_mode": "smoke",
+                    "initial_checkpoint": str(self.initial_checkpoint),
+                    "bpe_path": str(self.bpe_path),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _inspect(self):
+        import ui.training_process_manager as tpm
+
+        with mock.patch.object(tpm, "validate_training_run_path", return_value=None):
+            return tpm.inspect_resumable_training_run(self.run_dir)
+
+    def test_valid_run_is_resumable_without_loading_checkpoint(self) -> None:
+        candidate = self._inspect()
+        self.assertTrue(candidate["resumable"], candidate["errors"])
+        self.assertEqual(candidate["resume_checkpoint"], str(self.checkpoint))
+        self.assertEqual(candidate["training_prompt"], "cable")
+        self.assertEqual(candidate["command"][:4], ["conda", "run", "-n", "sam301"])
+
+    def test_stale_checkpoint_temp_file_warns_but_complete_checkpoint_remains_resumable(self) -> None:
+        self.checkpoint.with_name("checkpoint.pt.tmp").write_text("partial", encoding="utf-8")
+        candidate = self._inspect()
+        self.assertTrue(candidate["resumable"], candidate["errors"])
+        self.assertTrue(any("残留" in warning for warning in candidate["warnings"]))
+
+    def test_completed_run_blocks_resume(self) -> None:
+        (self.run_dir / "training_summary.json").write_text(
+            json.dumps({"status": "completed"}), encoding="utf-8"
+        )
+        candidate = self._inspect()
+        self.assertFalse(candidate["resumable"])
+        self.assertTrue(any("已完成" in reason for reason in candidate["errors"]))
+
+    def test_missing_base_checkpoint_blocks_resume(self) -> None:
+        self.initial_checkpoint.unlink()
+        candidate = self._inspect()
+        self.assertFalse(candidate["resumable"])
+        self.assertTrue(any("initial_checkpoint" in reason for reason in candidate["errors"]))
+
+    def test_live_process_using_same_runtime_blocks_resume(self) -> None:
+        from ui.process_manager import ProcessManager
+
+        manager = ProcessManager()
+        manager.start(
+            [sys.executable, "-c", "import time; time.sleep(30)", str(self.runtime_yaml)]
+        )
+        try:
+            candidate = self._inspect()
+            self.assertFalse(candidate["resumable"])
+            self.assertTrue(candidate["active_process_pids"])
+            self.assertTrue(any("活动训练进程" in reason for reason in candidate["errors"]))
+        finally:
+            manager.stop(timeout=2.0)
+
+    def test_resume_gate_requires_confirmation_and_cuda(self) -> None:
+        import ui.training_process_manager as tpm
+
+        candidate = self._inspect()
+        reasons = tpm.validate_can_resume_training(
+            candidate,
+            confirmed=False,
+            already_running=False,
+            cuda_available=False,
+            cuda_device_count=0,
+        )
+        self.assertTrue(any("确认框" in reason for reason in reasons))
+        self.assertTrue(any("CUDA" in reason for reason in reasons))
+
+
 class StartTrainingOneTimePreflightTest(unittest.TestCase):
     """Exercises start_training with fake commands only; never starts SAM3."""
 
@@ -1473,9 +1598,9 @@ class StartTrainingOneTimePreflightTest(unittest.TestCase):
         captured_env: dict[str, str] = {}
         original_start = self.manager.start
 
-        def start_spy(command, cwd=None, env=None, on_finish=None):
+        def start_spy(command, cwd=None, env=None, on_finish=None, metadata=None):
             captured_env.update(env or {})
-            return original_start(command, cwd=cwd, env=env, on_finish=on_finish)
+            return original_start(command, cwd=cwd, env=env, on_finish=on_finish, metadata=metadata)
 
         with mock.patch.object(self.manager, "start", side_effect=start_spy) as start_mock:
             result = self._run_to_end(state)
@@ -1548,6 +1673,15 @@ class TrainingProcessManagerTest(unittest.TestCase):
         self.manager.stop(timeout=5.0)
         _, state = self.manager.snapshot()
         self.assertEqual(training_status_label(state), "cancelled")
+
+    def test_status_paused_is_distinct_from_cancelled(self) -> None:
+        from ui.training_process_manager import training_status_label
+
+        self.manager.start(["python3", "-c", "import time; time.sleep(30)"])
+        self.manager.stop(timeout=5.0, reason="paused")
+        _, state = self.manager.snapshot()
+        self.assertEqual(training_status_label(state), "paused")
+        self.assertEqual(state.stop_reason, "paused")
 
     def test_second_start_while_running_is_rejected(self) -> None:
         self.manager.start(["python3", "-c", "import time; time.sleep(5)"])
@@ -1700,6 +1834,139 @@ class TrainingProcessManagerTest(unittest.TestCase):
         self.assertEqual(state.returncode, 0)
 
 
+class PauseTrainingHandlerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from ui.process_manager import ProcessManager
+        import ui.training_preflight_page as tpp
+        import ui.training_process_manager as tpm
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self.tmp.name) / "run"
+        (self.run_dir / "checkpoints").mkdir(parents=True)
+        self.manager = ProcessManager()
+        self.tpp = tpp
+        self.tpm = tpm
+        self.old_tpp_manager = tpp.training_process_manager
+        self.old_tpm_manager = tpm.training_process_manager
+        tpp.training_process_manager = self.manager
+        tpm.training_process_manager = self.manager
+
+    def tearDown(self) -> None:
+        if self.manager.is_running():
+            self.manager.stop(timeout=2.0)
+        self.tpp.training_process_manager = self.old_tpp_manager
+        self.tpm.training_process_manager = self.old_tpm_manager
+        self.tmp.cleanup()
+
+    def _start(self) -> None:
+        self.manager.start(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            metadata={"run_dir": str(self.run_dir)},
+        )
+
+    def test_pause_without_completed_checkpoint_is_blocked_and_process_keeps_running(self) -> None:
+        self._start()
+        status = self.tpp.pause_training()
+        self.assertIn("PAUSE BLOCKED", status)
+        self.assertTrue(self.manager.is_running())
+
+    def test_pause_with_completed_checkpoint_stops_with_paused_status(self) -> None:
+        (self.run_dir / "checkpoints" / "checkpoint.pt").write_bytes(b"complete")
+        self._start()
+        status = self.tpp.pause_training()
+        self.assertIn("paused", status)
+        self.assertFalse(self.manager.is_running())
+        _log, state = self.manager.snapshot()
+        self.assertEqual(self.tpm.training_status_label(state), "paused")
+
+
+class ResumeTrainingHandlerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from types import SimpleNamespace
+
+        from ui.process_manager import ProcessManager
+        import ui.training_preflight_page as tpp
+        import ui.training_process_manager as tpm
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self.tmp.name) / "run"
+        self.runtime_yaml = self.run_dir / "config" / "runtime_config.yaml"
+        self.checkpoint = self.run_dir / "checkpoints" / "checkpoint.pt"
+        self.runtime_yaml.parent.mkdir(parents=True)
+        self.checkpoint.parent.mkdir(parents=True)
+        self.runtime_yaml.write_text("trainer: {}\n", encoding="utf-8")
+        self.checkpoint.write_text("fake", encoding="utf-8")
+        self.manager = ProcessManager()
+        self.tpp = tpp
+        self.tpm = tpm
+        self.patchers = [
+            mock.patch.object(tpp, "training_process_manager", self.manager),
+            mock.patch.object(tpm, "training_process_manager", self.manager),
+            mock.patch.object(tpp, "detect_cuda", return_value=SimpleNamespace(available=True, device_count=1)),
+            mock.patch.object(tpp, "verify_patched_for_training", return_value=None),
+            mock.patch.object(tpp, "allocate_distributed_port", return_value=43001),
+            mock.patch.object(
+                tpp,
+                "configure_runtime_distributed_port",
+                return_value={"master_addr": "localhost", "master_port": 43001},
+            ),
+            mock.patch.object(
+                tpp,
+                "verify_sam3_import_for_training",
+                return_value={"ok": True, "sam3": str(EXPECTED_SAM3_INIT), "python": sys.executable},
+            ),
+            mock.patch.object(
+                tpp,
+                "collect_training_provenance",
+                return_value={"patch_guard_ok": True, "distributed": {"master_port": 43001}},
+            ),
+            mock.patch.object(tpp, "_write_launcher_provenance"),
+            mock.patch.object(tpp.time, "sleep", return_value=None),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        self.candidate = {
+            "resumable": True,
+            "run_dir": str(self.run_dir),
+            "runtime_yaml": str(self.runtime_yaml),
+            "resume_checkpoint": str(self.checkpoint),
+            "initial_checkpoint": "/fake/base.pt",
+            "num_gpus": 1,
+            "errors": [],
+            "warnings": [],
+            "command": [sys.executable, "-c", "print('resumed fake training')"],
+        }
+        self.inspect_patcher = mock.patch.object(
+            tpp, "inspect_resumable_training_run", return_value=self.candidate
+        )
+        self.inspect_patcher.start()
+
+    def tearDown(self) -> None:
+        if self.manager.is_running():
+            self.manager.stop(timeout=2.0)
+        self.inspect_patcher.stop()
+        for patcher in reversed(self.patchers):
+            patcher.stop()
+        self.tmp.cleanup()
+
+    def test_resume_uses_same_run_checkpoint_and_records_resume_attempt(self) -> None:
+        result = list(self.tpp.resume_training(str(self.run_dir), confirmed=True))
+        self.assertIn("status=completed", result[-1][0])
+        summary = json.loads((self.run_dir / "training_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["launch_kind"], "resume")
+        self.assertEqual(summary["resume_from_checkpoint"], str(self.checkpoint))
+        self.assertEqual(summary["attempt_count"], 1)
+        self.assertEqual(summary["attempts"][0]["launch_kind"], "resume")
+        _log, state = self.manager.snapshot()
+        self.assertEqual(state.metadata["run_dir"], str(self.run_dir))
+
+    def test_resume_without_confirmation_does_not_start_process(self) -> None:
+        result = list(self.tpp.resume_training(str(self.run_dir), confirmed=False))
+        self.assertIn("RESUME BLOCKED", result[0][0])
+        self.assertFalse(self.manager.is_running())
+        self.assertFalse((self.run_dir / "training_summary.json").exists())
+
+
 class FinalizeTrainingSummaryTest(unittest.TestCase):
     def test_summary_content_and_checkpoint_discovery(self) -> None:
         from ui.process_manager import ProcessManager
@@ -1756,6 +2023,55 @@ class FinalizeTrainingSummaryTest(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertTrue(summary["errors"])
         self.assertEqual(summary["discovered_checkpoint_files"], [])
+
+    def test_resume_attempt_is_appended_without_overwriting_pause_history(self) -> None:
+        from ui.process_manager import ProcessState
+        from ui.training_process_manager import finalize_training_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run1"
+            (run_dir / "checkpoints").mkdir(parents=True)
+            checkpoint = run_dir / "checkpoints" / "checkpoint.pt"
+            checkpoint.write_text("fake", encoding="utf-8")
+            now = time.time()
+            paused_state = ProcessState(
+                running=False,
+                returncode=-15,
+                stopped_by_user=True,
+                stop_reason="paused",
+                started_at=now,
+                finished_at=now + 1,
+            )
+            finalize_training_summary(
+                run_dir,
+                ["fake", "new"],
+                "runtime.yaml",
+                "/fake/base.pt",
+                state=paused_state,
+                attempt_id="new-1",
+                launch_kind="new",
+            )
+            completed_state = ProcessState(
+                running=False,
+                returncode=0,
+                started_at=now + 2,
+                finished_at=now + 3,
+            )
+            summary = finalize_training_summary(
+                run_dir,
+                ["fake", "resume"],
+                "runtime.yaml",
+                "/fake/base.pt",
+                state=completed_state,
+                attempt_id="resume-1",
+                launch_kind="resume",
+                resume_from_checkpoint=str(checkpoint),
+            )
+
+        self.assertEqual(summary["status"], "completed")
+        self.assertEqual(summary["attempt_count"], 2)
+        self.assertEqual([item["status"] for item in summary["attempts"]], ["paused", "completed"])
+        self.assertEqual(summary["attempts"][1]["launch_kind"], "resume")
 
 
 class TrainingSummaryBackgroundFinalizationTest(unittest.TestCase):

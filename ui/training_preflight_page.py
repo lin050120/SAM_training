@@ -30,11 +30,14 @@ from core.training_runner import (
 )
 from ui.training_process_manager import (
     finalize_training_summary,
+    inspect_resumable_training_run,
+    list_resumable_training_runs,
     make_training_summary_callback,
-    verify_sam3_import_for_training,
     training_process_manager,
     training_snapshot,
     validate_can_start_training,
+    validate_can_resume_training,
+    verify_sam3_import_for_training,
 )
 from ui.ui_utils import (
     detect_cuda,
@@ -397,6 +400,7 @@ def start_training(
             yield f"ERROR: failed to collect training provenance: {exc!r}", "", "{}", "{}"
             return
         try:
+            attempt_id = f"new-{uuid.uuid4().hex}"
             training_process_manager.start(
                 command,
                 cwd=BOOK_ROOT,
@@ -410,7 +414,14 @@ def start_training(
                     effective_pythonpath=env.get("PYTHONPATH"),
                     training_provenance=training_provenance,
                     distributed=distributed,
+                    attempt_id=attempt_id,
+                    launch_kind="new",
                 ),
+                metadata={
+                    "run_dir": str(run_dir),
+                    "attempt_id": attempt_id,
+                    "launch_kind": "new",
+                },
             )
         except Exception as exc:
             logger.exception("training_start_failed")
@@ -432,6 +443,8 @@ def start_training(
         effective_pythonpath=env.get("PYTHONPATH"),
         training_provenance=training_provenance,
         distributed=distributed,
+        attempt_id=attempt_id,
+        launch_kind="new",
     )
     yield f"status={snap['status']} pid={snap['pid']}", snap["log"], format_json(snap), format_json(summary)
 
@@ -439,8 +452,167 @@ def start_training(
 def stop_training() -> str:
     if not training_process_manager.is_running():
         return "no active training task to stop"
-    training_process_manager.stop()
+    training_process_manager.stop(reason="cancelled")
     return "stop requested"
+
+
+def pause_training() -> str:
+    """Release the GPU and preserve the latest completed epoch for later resume."""
+    if not training_process_manager.is_running():
+        return "PAUSE BLOCKED: no active training task"
+    _log, process_state = training_process_manager.snapshot()
+    run_dir_value = process_state.metadata.get("run_dir")
+    if not run_dir_value:
+        return "PAUSE BLOCKED: active task has no trusted run directory metadata"
+    run_dir = Path(run_dir_value).expanduser().resolve(strict=False)
+    checkpoint = run_dir / "checkpoints" / "checkpoint.pt"
+    checkpoint_tmp = checkpoint.with_name(f"{checkpoint.name}.tmp")
+    if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
+        return (
+            "PAUSE BLOCKED: 还没有完整的 checkpoints/checkpoint.pt。"
+            "请等待至少一个 epoch 完成并保存 checkpoint 后再暂停。"
+        )
+    if checkpoint_tmp.exists():
+        return "PAUSE BLOCKED: checkpoint.pt.tmp 存在，训练器正在保存 checkpoint，请稍后重试。"
+    training_process_manager.stop(reason="paused")
+    return (
+        "paused: GPU 已释放；恢复时将从最近完整 checkpoint 继续。"
+        "当前 epoch 中 checkpoint 之后的进度不会保留。"
+    )
+
+
+def resumable_run_details(run_dir: str | None) -> str:
+    return format_json(inspect_resumable_training_run(run_dir))
+
+
+def refresh_resumable_runs(current_run: str | None = None) -> tuple[Any, str]:
+    choices = list_resumable_training_runs()
+    selected = current_run if current_run in choices else (choices[0] if choices else None)
+    detail = resumable_run_details(selected) if selected else format_json(
+        {
+            "resumable": False,
+            "message": "没有发现含 checkpoints/checkpoint.pt 的 run。",
+        }
+    )
+    return gr.update(choices=choices, value=selected), detail
+
+
+def resume_training(
+    run_dir_value: str | None,
+    confirmed: bool,
+) -> Iterator[tuple[str, str, str, str]]:
+    """Resume an existing run; SAM3 auto-loads save_dir/checkpoint.pt."""
+    with _preflight_launch_lock:
+        candidate = inspect_resumable_training_run(run_dir_value)
+        cuda = detect_cuda()
+        reasons = validate_can_resume_training(
+            candidate,
+            confirmed=confirmed,
+            already_running=training_process_manager.is_running(),
+            cuda_available=cuda.available,
+            cuda_device_count=cuda.device_count,
+        )
+        patch_guard_error = verify_patched_for_training()
+        if patch_guard_error:
+            reasons.append(f"sam301 patch guard: {patch_guard_error}")
+        if reasons:
+            yield "RESUME BLOCKED:\n" + "\n".join(reasons), "", format_json(candidate), "{}"
+            return
+
+        run_dir = Path(str(candidate["run_dir"]))
+        runtime_yaml = Path(str(candidate["runtime_yaml"]))
+        command = list(candidate["command"])
+        resume_checkpoint = str(candidate["resume_checkpoint"])
+        try:
+            master_port = allocate_distributed_port(DEFAULT_DISTRIBUTED_MASTER_ADDR)
+            distributed = configure_runtime_distributed_port(
+                runtime_yaml,
+                master_port,
+                master_addr=DEFAULT_DISTRIBUTED_MASTER_ADDR,
+            )
+        except Exception as exc:
+            yield f"RESUME BLOCKED: distributed port allocation failed: {exc!r}", "", format_json(candidate), "{}"
+            return
+
+        env = training_subprocess_env(os.environ)
+        env["MASTER_ADDR"] = str(distributed["master_addr"])
+        env["MASTER_PORT"] = str(distributed["master_port"])
+        guard = verify_sam3_import_for_training(env=env)
+        if not guard["ok"]:
+            yield (
+                "ERROR: SAM3 import guard failed before resume launch:\n"
+                f"expected={guard['expected']}\nactual={guard.get('sam3')}\nerror={guard.get('error')}"
+            ), "", format_json(guard), "{}"
+            return
+        try:
+            training_provenance = collect_training_provenance(
+                runtime_config_path=runtime_yaml,
+                sam3_import_path=guard.get("sam3"),
+                python_executable=guard.get("python"),
+                distributed=distributed,
+            )
+            _write_launcher_provenance(run_dir, training_provenance)
+        except Exception as exc:
+            logger.exception("training_resume_provenance_failed")
+            yield f"ERROR: failed to collect resume provenance: {exc!r}", "", "{}", "{}"
+            return
+
+        attempt_id = f"resume-{uuid.uuid4().hex}"
+        try:
+            training_process_manager.start(
+                command,
+                cwd=BOOK_ROOT,
+                env=env,
+                on_finish=make_training_summary_callback(
+                    run_dir,
+                    command,
+                    str(runtime_yaml),
+                    candidate.get("initial_checkpoint"),
+                    import_metadata=guard,
+                    effective_pythonpath=env.get("PYTHONPATH"),
+                    training_provenance=training_provenance,
+                    distributed=distributed,
+                    attempt_id=attempt_id,
+                    launch_kind="resume",
+                    resume_from_checkpoint=resume_checkpoint,
+                ),
+                metadata={
+                    "run_dir": str(run_dir),
+                    "attempt_id": attempt_id,
+                    "launch_kind": "resume",
+                    "resume_from_checkpoint": resume_checkpoint,
+                },
+            )
+        except Exception as exc:
+            logger.exception("training_resume_start_failed")
+            yield f"ERROR: failed to start resumed training process: {exc!r}", "", "{}", "{}"
+            return
+
+    while training_process_manager.is_running():
+        snap = training_snapshot(run_dir)
+        yield (
+            f"status={snap['status']} pid={snap['pid']} resume_from={resume_checkpoint}",
+            snap["log"],
+            format_json(snap),
+            "{}",
+        )
+        time.sleep(1.0)
+
+    snap = training_snapshot(run_dir)
+    summary = finalize_training_summary(
+        run_dir,
+        command,
+        str(runtime_yaml),
+        candidate.get("initial_checkpoint"),
+        import_metadata=guard,
+        effective_pythonpath=env.get("PYTHONPATH"),
+        training_provenance=training_provenance,
+        distributed=distributed,
+        attempt_id=attempt_id,
+        launch_kind="resume",
+        resume_from_checkpoint=resume_checkpoint,
+    )
+    yield f"status={snap['status']} pid={snap['pid']}", snap["log"], format_json(snap), format_json(summary)
 
 
 def build_training_tab() -> None:
@@ -551,6 +723,7 @@ def build_training_tab() -> None:
     confirm_checkbox = gr.Checkbox(label="我确认这将启动 GPU 训练任务。", value=False)
     with gr.Row():
         start_btn = gr.Button("启动训练", variant="stop")
+        pause_btn = gr.Button("暂停训练并释放显存")
         stop_btn = gr.Button("停止训练")
 
     training_status_box = gr.Textbox(label="训练任务状态", interactive=False)
@@ -562,9 +735,50 @@ def build_training_tab() -> None:
     )
     training_summary_box = gr.Code(label="training_summary.json (训练结束后生成)", language="json")
 
+    gr.Markdown("### 阶段 C: 从最近完整 Checkpoint 恢复")
+    initial_resume_runs = list_resumable_training_runs()
+    with gr.Row():
+        resume_run_dropdown = gr.Dropdown(
+            label="训练 run（含 checkpoint.pt）",
+            choices=initial_resume_runs,
+            value=initial_resume_runs[0] if initial_resume_runs else None,
+            interactive=True,
+        )
+        refresh_resume_btn = gr.Button("刷新可恢复 run")
+    resume_details_box = gr.Code(
+        label="恢复预检信息",
+        language="json",
+        value=(
+            resumable_run_details(initial_resume_runs[0])
+            if initial_resume_runs
+            else format_json({"resumable": False, "message": "没有发现含 checkpoint.pt 的 run。"})
+        ),
+    )
+    resume_confirm_checkbox = gr.Checkbox(
+        label="我确认将从最近完整 checkpoint 恢复；当前 epoch 未保存的进度会丢失。",
+        value=False,
+    )
+    resume_btn = gr.Button("恢复训练", variant="primary")
+
     start_btn.click(
         fn=start_training,
         inputs=[preflight_state, confirm_checkbox],
         outputs=[training_status_box, training_log_box, training_monitor_box, training_summary_box],
     )
+    pause_btn.click(fn=pause_training, inputs=[], outputs=[training_status_box])
     stop_btn.click(fn=stop_training, inputs=[], outputs=[training_status_box])
+    resume_run_dropdown.change(
+        fn=resumable_run_details,
+        inputs=[resume_run_dropdown],
+        outputs=[resume_details_box],
+    )
+    refresh_resume_btn.click(
+        fn=refresh_resumable_runs,
+        inputs=[resume_run_dropdown],
+        outputs=[resume_run_dropdown, resume_details_box],
+    )
+    resume_btn.click(
+        fn=resume_training,
+        inputs=[resume_run_dropdown, resume_confirm_checkbox],
+        outputs=[training_status_box, training_log_box, training_monitor_box, training_summary_box],
+    )

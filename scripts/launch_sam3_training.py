@@ -142,7 +142,14 @@ def _verify_sam301_patch_or_die(project_root: Path | None = None) -> None:
         )
 
 
-def run_training(config_path: str | Path, num_gpus: int | None, num_nodes: int | None, use_cluster: int | None) -> None:
+def run_training(
+    config_path: str | Path,
+    num_gpus: int | None,
+    num_nodes: int | None,
+    use_cluster: int | None,
+    wait_free_gb: float = 29.3,
+    wait_check_interval: float = 30.0,
+) -> None:
     _verify_sam301_patch_or_die()
 
     from hydra import initialize_config_dir
@@ -160,6 +167,8 @@ def run_training(config_path: str | Path, num_gpus: int | None, num_nodes: int |
         qos=None,
         num_gpus=num_gpus,
         num_nodes=num_nodes,
+        wait_free_gb=wait_free_gb,
+        wait_check_interval=wait_check_interval,
     )
     register_omegaconf_resolvers()
     with initialize_config_dir(config_dir=config_dir, version_base="1.2"):
@@ -177,6 +186,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="compose the config with Hydra and exit without starting training",
     )
+    parser.add_argument(
+        "--wait-free-gb",
+        type=float,
+        default=29.3,
+        help="wait until every visible GPU has at least this much free memory (GiB) "
+        "before starting training (29.3 GiB = 30000 MiB, past training peak); "
+        "set 0 to disable",
+    )
+    parser.add_argument(
+        "--wait-check-interval",
+        type=float,
+        default=30.0,
+        help="seconds between free GPU memory checks while waiting",
+    )
     args = parser.parse_args(argv)
 
     if args.validate_only:
@@ -188,7 +211,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hydra validation ok: {args.config}")
         return 0
 
-    run_training(args.config, num_gpus=args.num_gpus, num_nodes=args.num_nodes, use_cluster=args.use_cluster)
+    run_training(
+        args.config,
+        num_gpus=args.num_gpus,
+        num_nodes=args.num_nodes,
+        use_cluster=args.use_cluster,
+        wait_free_gb=args.wait_free_gb,
+        wait_check_interval=args.wait_check_interval,
+    )
     return 0
 
 

@@ -18,10 +18,12 @@ class ProcessState:
     running: bool = False
     returncode: int | None = None
     stopped_by_user: bool = False
+    stop_reason: str | None = None
     command: list[str] = field(default_factory=list)
     cwd: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 class ProcessManager:
@@ -71,6 +73,7 @@ class ProcessManager:
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         on_finish: Callable[[str, ProcessState], None] | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> None:
         with self._lock:
             if self._state.running:
@@ -82,6 +85,7 @@ class ProcessManager:
                 command=list(command),
                 cwd=str(cwd) if cwd else None,
                 started_at=time.time(),
+                metadata=dict(metadata or {}),
             )
         logger.info("process_start command=%s cwd=%s", command, cwd)
         try:
@@ -145,13 +149,14 @@ class ProcessManager:
             except ProcessLookupError:
                 pass
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float = 5.0, reason: str = "cancelled") -> None:
         process = self._process
         if process is None:
             return
         with self._lock:
             self._state.stopped_by_user = True
-        logger.info("process_stop_requested pid=%s", process.pid)
+            self._state.stop_reason = reason
+        logger.info("process_stop_requested pid=%s reason=%s", process.pid, reason)
         if process.poll() is None:
             self._signal_group(process, signal.SIGTERM)
             try:

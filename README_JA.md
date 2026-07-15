@@ -7,6 +7,7 @@
 - 簡易使用説明と注意事項：[`docs/QUICK_START_JA.md`](docs/QUICK_START_JA.md)
 - 完全な使用説明：[`docs/USER_GUIDE_JA.md`](docs/USER_GUIDE_JA.md)
 - プログラム移行ガイド：[`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)（English: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)，中文: [`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)）
+- 学習の一時停止と再開：[`docs/TRAINING_PAUSE_RESUME_JA.md`](docs/TRAINING_PAUSE_RESUME_JA.md)（English: [`docs/TRAINING_PAUSE_RESUME_EN.md`](docs/TRAINING_PAUSE_RESUME_EN.md)，中文: [`docs/TRAINING_PAUSE_RESUME_CN.md`](docs/TRAINING_PAUSE_RESUME_CN.md)）
 
 以下のコマンドはすべて `book01` プロジェクトルートで実行します。`book01` と SAM301 ソースツリーの本機での場所は、Git 対象外の `config/local_paths.json` で決まります（「別マシンへの移行」参照）。元のマシンでのデフォルトは `/home/book/book01` と `/home/book/sam301` です。以下の `<sam301_root>` は設定された SAM301 ソースディレクトリを指します。
 
@@ -28,7 +29,7 @@ conda run -n sam301 python scripts/migrate_environment.py
 conda run -n sam301 python app.py
 ```
 
-学習タブは 2 段階フローです：プリフライトは runtime 設定を生成・検証するだけで何も起動しません。開始ボタンはサーバー側でゲートされ、プリフライト合格、checkpoint/データ/runtime YAML が全て存在、他に学習タスクが動いていない、CUDA が利用可能、かつユーザーが明示的に確認した場合にのみ、`scripts/launch_sam3_training.py` 経由で公式 SAM3 トレーナーを起動します（per-run の runtime YAML を `sam3.train.train.main()` に渡す）。プリフライト入力を編集すると保存済みプリフライト結果は即座に無効化されます。
+学習タブは新規学習と永続的な一時停止/再開に対応します：プリフライトは runtime 設定を生成・検証するだけで何も起動しません。開始ボタンはサーバー側でゲートされ、プリフライト合格、checkpoint/データ/runtime YAML が全て存在、他に学習タスクが動いていない、CUDA が利用可能、かつユーザーが明示的に確認した場合にのみ、`scripts/launch_sam3_training.py` 経由で公式 SAM3 トレーナーを起動します（per-run の runtime YAML を `sam3.train.train.main()` に渡す）。プリフライト入力を編集すると保存済みプリフライト結果は即座に無効化されます。少なくとも 1 epoch の完全な checkpoint 生成後は、プロセスを停止して GPU メモリを解放し、ステージ C から最新の完全な `checkpoint.pt` を使って同じ run を再開できます。
 
 通常のターミナルから起動してください（制限された sandbox からではなく）。UI プロセスの CUDA 検出が実際の GPU 可視性を反映するためです。`127.0.0.1:7860` のみで待ち受けます（`share=False`）。UI が学習を黙って開始したり CPU に黙ってフォールバックすることはありません：`device=cuda` を要求して CUDA が利用できない場合、推論の起動を拒否します。
 

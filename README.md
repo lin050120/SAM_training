@@ -9,6 +9,7 @@ and Japanese.
 - Quick start: [`docs/QUICK_START_CN.md`](docs/QUICK_START_CN.md)（日本語: [`docs/QUICK_START_JA.md`](docs/QUICK_START_JA.md)）
 - Full user guide: [`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)（日本語: [`docs/USER_GUIDE_JA.md`](docs/USER_GUIDE_JA.md)）
 - Program migration guide: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)（中文: [`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)，日本語: [`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)）
+- Pause/resume training: [`docs/TRAINING_PAUSE_RESUME_EN.md`](docs/TRAINING_PAUSE_RESUME_EN.md) (中文: [`docs/TRAINING_PAUSE_RESUME_CN.md`](docs/TRAINING_PAUSE_RESUME_CN.md), 日本語: [`docs/TRAINING_PAUSE_RESUME_JA.md`](docs/TRAINING_PAUSE_RESUME_JA.md))
 
 Run all commands below from the `book01` project root. The machine-specific
 locations of `book01` and the SAM301 source tree come from the git-ignored
@@ -45,13 +46,15 @@ reimplementing any of it. Details: `docs/stage_d_ui.md` and
 conda run -n sam301 python app.py
 ```
 
-The training tab is a two-stage flow: preflight generates and validates a
+The training tab supports new runs plus durable pause/resume: preflight generates and validates a
 runtime config without starting anything; the start button is gated server-side
 and launches the official SAM3 trainer (via `scripts/launch_sam3_training.py`,
 which hands the per-run runtime YAML to `sam3.train.train.main()`) only once
 preflight passed, the checkpoint/data/runtime YAML all exist, no other training
 task is running, CUDA is available, and the user has explicitly confirmed.
 Editing any preflight input immediately invalidates the stored preflight result.
+After at least one epoch checkpoint exists, pause stops the process and releases
+GPU memory; Stage C resumes the same run from its latest complete `checkpoint.pt`.
 
 Launch from a normal terminal, not a restricted sandbox, so the UI process's
 CUDA detection reflects the real GPU visibility. Listens on `127.0.0.1:7860`

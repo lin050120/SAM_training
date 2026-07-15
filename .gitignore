@@ -27,3 +27,7 @@ experiments/
 SAM3_アノテーションデータ/
 sam3_finetune_kit/
 sam3_finetune_kit_debug/
+
+# Local inputs and generated outputs for the offline augmentation utility
+Data_augmentation./inputs/
+Data_augmentation./outputs/
