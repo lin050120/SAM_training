@@ -8,6 +8,7 @@
 - 中文完整使用说明：[`docs/USER_GUIDE_ZH_CN.md`](docs/USER_GUIDE_ZH_CN.md)
 - 程序迁移说明：[`docs/PROGRAM_MIGRATION_CN.md`](docs/PROGRAM_MIGRATION_CN.md)（English: [`docs/PROGRAM_MIGRATION_EN.md`](docs/PROGRAM_MIGRATION_EN.md)，日本語: [`docs/PROGRAM_MIGRATION_JA.md`](docs/PROGRAM_MIGRATION_JA.md)）
 - 训练暂停与恢复：[`docs/TRAINING_PAUSE_RESUME_CN.md`](docs/TRAINING_PAUSE_RESUME_CN.md)（English: [`docs/TRAINING_PAUSE_RESUME_EN.md`](docs/TRAINING_PAUSE_RESUME_EN.md)，日本語: [`docs/TRAINING_PAUSE_RESUME_JA.md`](docs/TRAINING_PAUSE_RESUME_JA.md)）
+- 在线训练数据增强：[`docs/ONLINE_TRAINING_AUGMENTATION_CN.md`](docs/ONLINE_TRAINING_AUGMENTATION_CN.md)（English: [`docs/ONLINE_TRAINING_AUGMENTATION_EN.md`](docs/ONLINE_TRAINING_AUGMENTATION_EN.md)，日本語: [`docs/ONLINE_TRAINING_AUGMENTATION_JA.md`](docs/ONLINE_TRAINING_AUGMENTATION_JA.md)）
 
 以下命令都在 `book01` 项目根目录下执行。`book01` 和 SAM301 源码树在本机的位置由 Git 忽略的 `config/local_paths.json` 决定（见"更换电脑"一节）；在原始机器上默认为 `/home/book/book01` 和 `/home/book/sam301`。下文 `<sam301_root>` 指配置的 SAM301 源码目录。
 
@@ -30,6 +31,8 @@ conda run -n sam301 python app.py
 ```
 
 训练页支持新训练和持久化暂停/恢复：预检只生成并校验 runtime 配置，不启动任何东西；启动按钮由服务端把关，只有在预检通过、checkpoint/数据/runtime YAML 全部存在、当前没有其他训练任务、CUDA 可用、且用户已明确勾选确认后，才通过 `scripts/launch_sam3_training.py` 调起官方 SAM3 训练器（把 per-run runtime YAML 交给 `sam3.train.train.main()`）。编辑任何预检输入都会立即作废已存的预检结果。至少生成一个完整 epoch checkpoint 后，可以停止进程并释放显存；阶段 C 使用最新完整 `checkpoint.pt` 恢复同一 run。
+
+同一页面支持“关闭/轻量/自定义”三档在线训练数据增强。几何变换会同步处理图片和 mask，只作用于 train，不改变 val、test 和推理流程。
 
 请在普通终端启动（不要在受限的 sandbox 里），这样 UI 进程的 CUDA 检测才反映真实的 GPU 可见性。只监听 `127.0.0.1:7860`（`share=False`）。UI 绝不静默启动训练或回退 CPU：请求 `device=cuda` 而 CUDA 不可用时，会拒绝启动推理。
 

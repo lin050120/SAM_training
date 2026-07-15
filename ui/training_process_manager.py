@@ -562,6 +562,10 @@ def finalize_training_summary(
     the full pause/resume history.
     """
     summary_path = run_dir / "training_summary.json"
+    config_summary, _config_summary_error = _read_json_dict(
+        run_dir / "training_config_summary.json"
+    )
+    online_augmentation = (config_summary or {}).get("online_augmentation")
     if state is None:
         captured_log, state = training_process_manager.snapshot()
     else:
@@ -618,6 +622,7 @@ def finalize_training_summary(
         "stdout_stderr_tail": "\n".join((captured_log or "").splitlines()[-200:]),
         "warnings": warnings,
         "errors": errors,
+        "online_augmentation": online_augmentation,
     }
     summary = {
         "run_id": run_dir.name,
@@ -646,6 +651,7 @@ def finalize_training_summary(
         "stdout_stderr_tail": "\n".join((captured_log or "").splitlines()[-200:]),
         "warnings": warnings,
         "errors": errors,
+        "online_augmentation": online_augmentation,
     }
     with _summary_lock:
         existing = _load_existing_summary(summary_path) if summary_path.exists() else None

@@ -157,12 +157,30 @@ JA: dict[str, str] = {
     "num_workers (留空=基础YAML, 只作用于训练集)": "num_workers（空欄=ベース YAML、学習セットのみに適用）",
     "smoke (max_epochs<=1, 未审核数据默认)": "smoke（max_epochs<=1、未レビューデータのデフォルト）",
     "formal (需要人工审核 GT)": "formal（人手レビュー済み GT が必要）",
+    "### 在线训练数据增强": "### オンライン学習データ拡張",
+    "增强预设": "拡張プリセット",
+    "关闭": "オフ",
+    "轻量": "軽量",
+    "自定义": "カスタム",
+    "增强参数": "拡張パラメータ",
+    "每张源图每 epoch 的样本数": "元画像 1 枚あたりの epoch ごとのサンプル数",
+    "仿射变换概率": "アフィン変換の確率",
+    "水平翻转概率": "水平反転の確率",
+    "最小旋转角度": "最小回転角度",
+    "最大旋转角度": "最大回転角度",
+    "最大平移比例": "最大平行移動比率",
+    "最小缩放倍数": "最小スケール倍率",
+    "最大缩放倍数": "最大スケール倍率",
+    "颜色抖动概率": "カラージッターの確率",
+    "颜色抖动强度": "カラージッターの強度",
+    "运动模糊概率": "モーションブラーの確率",
     "运行训练预检 (不会启动训练)": "学習プリフライトを実行（学習は開始しません）",
     "预检状态": "プリフライト状態",
     "预检结果 (resolved paths / max_epochs / batch size / gradient accumulation / learning rate / "
-    "num_workers / effective batch size / prompt / runtime YAML / 最终训练命令)":
+    "num_workers / effective batch size / prompt / online augmentation / runtime YAML / 最终训练命令)":
         "プリフライト結果 (resolved paths / max_epochs / batch size / gradient accumulation / "
-        "learning rate / num_workers / effective batch size / prompt / runtime YAML / 最終学習コマンド)",
+        "learning rate / num_workers / effective batch size / prompt / online augmentation / runtime YAML / "
+        "最終学習コマンド)",
     "### 阶段 B: 启动训练": "### ステージ B: 学習開始",
     "我确认这将启动 GPU 训练任务。": "これが GPU 学習タスクを開始することを確認しました。",
     "启动训练": "学習開始",

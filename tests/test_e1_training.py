@@ -266,7 +266,10 @@ class Sam301EnvironmentMigrationTest(unittest.TestCase):
 
         original = {"PYTHONPATH": "/tmp/custom", "OTHER": "1"}
         env = training_subprocess_env(original)
-        self.assertEqual(env["PYTHONPATH"], f"{EXPECTED_SAM3_ROOT}:/tmp/custom")
+        self.assertEqual(
+            env["PYTHONPATH"],
+            f"{EXPECTED_SAM3_ROOT}:{BOOK_ROOT}:/tmp/custom",
+        )
         self.assertEqual(original["PYTHONPATH"], "/tmp/custom")
         self.assertEqual(env["OTHER"], "1")
 
@@ -943,12 +946,22 @@ class PreflightGuardsTest(unittest.TestCase):
         from core.training_runner import inspect_training_config
 
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
-            # 44 images, effective = 3 -> 14 full outer batches, 2 images dropped
+            train_data = json.loads(
+                (DEFAULT_BOOK_SPINE_DATASET_ROOT / "train" / "annotations.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            train_count = len(train_data["images"])
+            effective = next(
+                candidate
+                for candidate in range(2, min(train_count, 16) + 1)
+                if train_count % candidate != 0
+            )
             preflight = inspect_training_config(
                 training_prompt="book spine",
                 max_epochs=1,
                 train_batch_size=1,
-                gradient_accumulation_steps=3,
+                gradient_accumulation_steps=effective,
                 output_root=Path(tmp),
                 prepare_runtime=True,
                 collect_import_metadata=False,

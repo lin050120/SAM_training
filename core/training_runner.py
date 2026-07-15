@@ -35,6 +35,11 @@ from core.dataset_identity import (
     resolve_dataset_identity,
     validate_training_mode_against_identity,
 )
+from core.online_augmentation import (
+    OnlineAugmentationConfig,
+    build_online_augmentation_transforms,
+    resolve_online_augmentation_config,
+)
 from core.sam301_patch import collect_training_provenance, verify_patched_for_training
 
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
@@ -124,6 +129,7 @@ class TrainingPreflight:
     errors: list[str]
     training_provenance: dict[str, Any] | None = None
     dataset_identity: dict[str, Any] | None = None
+    online_augmentation: dict[str, Any] | None = None
 
 
 def _same_file_or_path(a: Path, b: Path) -> bool:
@@ -288,12 +294,14 @@ def training_subprocess_env(base_env: dict[str, str] | None = None) -> dict[str,
     The sam301 conda environment is the primary source of truth. PYTHONPATH is still
     prefixed defensively for child processes so an accidental future editable-package
     regression cannot silently import /home/book/sam3. The caller's value is preserved
-    after the canonical source root, and os.environ is never mutated globally.
+    after the canonical source roots, and os.environ is never mutated globally.
     """
     env = dict(base_env) if base_env is not None else os.environ.copy()
     existing = env.get("PYTHONPATH")
-    prefix = str(EXPECTED_SAM3_ROOT)
-    env["PYTHONPATH"] = prefix if not existing else f"{prefix}{os.pathsep}{existing}"
+    prefixes = [str(EXPECTED_SAM3_ROOT), str(BOOK_ROOT)]
+    if existing:
+        prefixes.extend(part for part in existing.split(os.pathsep) if part)
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(prefixes))
     return env
 
 
@@ -614,6 +622,7 @@ def write_runtime_yaml(
     gradient_accumulation_steps: int | None = None,
     learning_rate: float | None = None,
     num_workers: int | None = None,
+    online_augmentation: OnlineAugmentationConfig | dict[str, Any] | None = None,
 ) -> None:
     """Render the base authoritative YAML into a per-run runtime YAML.
 
@@ -645,6 +654,11 @@ def write_runtime_yaml(
     not silently unfreeze them.
     """
     cfg = OmegaConf.load(base_config)
+    augmentation, augmentation_errors = resolve_online_augmentation_config(
+        online_augmentation
+    )
+    if augmentation_errors:
+        raise ValueError("; ".join(augmentation_errors))
     slug = task_slug_from_name(task_slug or training_prompt)
     dataset_root = DEFAULT_BOOK_SPINE_DATASET_ROOT.resolve(strict=False)
     train_ann = paths.get("train_annotations")
@@ -677,6 +691,51 @@ def write_runtime_yaml(
         OmegaConf.update(cfg, "scratch.num_train_workers", int(num_workers), merge=False)
     if learning_rate is not None:
         OmegaConf.update(cfg, "scratch.lr_transformer", float(learning_rate), merge=False)
+
+    # Online augmentation is inserted only into the train ComposeAPI, immediately
+    # after DecodeRle and before the base resize/pad transforms. Validation remains
+    # byte-for-byte equivalent to the authoritative YAML transform tree.
+    OmegaConf.update(cfg, "online_augmentation", augmentation.to_dict(), merge=False)
+    if augmentation.enabled:
+        train_transforms = OmegaConf.to_container(
+            OmegaConf.select(cfg, "book_spine.train_transforms.0.transforms"),
+            resolve=False,
+        )
+        if not isinstance(train_transforms, list):
+            raise ValueError("base config train ComposeAPI transforms must be a list")
+        decode_index = next(
+            (
+                index
+                for index, item in enumerate(train_transforms)
+                if isinstance(item, dict)
+                and item.get("_target_") == "sam3.train.transforms.segmentation.DecodeRle"
+            ),
+            None,
+        )
+        if decode_index is None:
+            raise ValueError("base config train transforms must contain DecodeRle")
+        train_transforms[decode_index + 1 : decode_index + 1] = build_online_augmentation_transforms(
+            augmentation
+        )
+        OmegaConf.update(
+            cfg,
+            "book_spine.train_transforms.0.transforms",
+            train_transforms,
+            merge=False,
+        )
+    if augmentation.repeat_factor > 1:
+        OmegaConf.update(
+            cfg,
+            "trainer.data.train.dataset._target_",
+            "core.training_augmentation.RepeatedSam3ImageDataset",
+            merge=False,
+        )
+        OmegaConf.update(
+            cfg,
+            "trainer.data.train.dataset.repeat_factor",
+            augmentation.repeat_factor,
+            merge=False,
+        )
 
     # Gradient accumulation wiring. trainer._run_step requires the dataloader to
     # yield a LIST of exactly gradient_accumulation_steps micro-batches when
@@ -743,9 +802,14 @@ def inspect_training_config(
     prepare_runtime: bool = True,
     collect_import_metadata: bool = False,
     training_mode: str = TRAINING_MODE_SMOKE,
+    online_augmentation: OnlineAugmentationConfig | dict[str, Any] | None = None,
 ) -> TrainingPreflight:
     warnings: list[str] = []
     errors: list[str] = []
+    resolved_augmentation, augmentation_errors = resolve_online_augmentation_config(
+        online_augmentation
+    )
+    errors.extend(augmentation_errors)
     base_config = _resolve_existing_or_absolute(config_path)
     train_script = _resolve_existing_or_absolute(train_script)
     try:
@@ -959,18 +1023,20 @@ def inspect_training_config(
         # the trainer would "complete" an epoch with ZERO optimizer steps yet still
         # save a checkpoint. Reject that outright; warn about partial-batch drops.
         if effective is not None and train_coco is not None and train_coco.images:
-            if train_coco.images < effective:
+            train_samples_per_epoch = train_coco.images * resolved_augmentation.repeat_factor
+            if train_samples_per_epoch < effective:
                 errors.append(
-                    f"train image count ({train_coco.images}) is smaller than the effective "
+                    f"train samples per epoch ({train_samples_per_epoch} = {train_coco.images} source images "
+                    f"x repeat_factor {resolved_augmentation.repeat_factor}) is smaller than the effective "
                     f"batch size ({effective} = train_batch_size x gradient_accumulation_steps "
                     f"x num_gpus); with drop_last=True this trains for 0 optimizer steps and "
                     "would produce a fake 'completed' run — refusing to prepare this run"
                 )
-            elif train_coco.images % effective != 0:
+            elif train_samples_per_epoch % effective != 0:
                 warnings.append(
-                    f"train image count ({train_coco.images}) is not divisible by the effective "
+                    f"train samples per epoch ({train_samples_per_epoch}) is not divisible by the effective "
                     f"batch size ({effective}); drop_last=True will drop "
-                    f"{train_coco.images % effective} image(s) every epoch"
+                    f"{train_samples_per_epoch % effective} sample(s) every epoch"
                 )
 
         # Dataset identity guard: the current formal_book_spine_sam3_dataset split is
@@ -1024,6 +1090,7 @@ def inspect_training_config(
                 gradient_accumulation_steps=validated_gradient_accumulation_steps,
                 learning_rate=validated_learning_rate,
                 num_workers=validated_num_workers,
+                online_augmentation=resolved_augmentation,
             )
             distributed_port = allocate_distributed_port(DEFAULT_DISTRIBUTED_MASTER_ADDR)
             distributed_metadata = configure_runtime_distributed_port(
@@ -1106,6 +1173,7 @@ def inspect_training_config(
             "distributed": distributed_metadata,
             "dataset_identity": dataset_identity,
             "training_mode": training_mode,
+            "online_augmentation": resolved_augmentation.to_dict(),
         }
         (run_dir / "dataset_info.json").write_text(json.dumps(dataset_info, ensure_ascii=False, indent=2), encoding="utf-8")
         training_config_summary = {
@@ -1137,6 +1205,7 @@ def inspect_training_config(
             "distributed": distributed_metadata,
             "dataset_identity": dataset_identity,
             "training_mode": training_mode,
+            "online_augmentation": resolved_augmentation.to_dict(),
         }
         (run_dir / "training_config_summary.json").write_text(
             json.dumps(training_config_summary, ensure_ascii=False, indent=2) + "\n",
@@ -1197,6 +1266,7 @@ def inspect_training_config(
         errors=errors,
         training_provenance=training_provenance,
         dataset_identity=dataset_identity,
+        online_augmentation=resolved_augmentation.to_dict(),
     )
 
 

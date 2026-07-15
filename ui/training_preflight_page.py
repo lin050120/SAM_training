@@ -20,6 +20,13 @@ from core.config import (
     DEFAULT_TRAINING_RUN_ROOT,
 )
 from core.dataset_split_builder import DatasetBuildConfig, build_training_dataset
+from core.online_augmentation import (
+    LIGHT_CONFIG,
+    OFF_CONFIG,
+    ONLINE_AUGMENTATION_CUSTOM,
+    ONLINE_AUGMENTATION_LIGHT,
+    OnlineAugmentationConfig,
+)
 from core.sam301_patch import verify_patched_for_training
 from core.sam301_patch import collect_training_provenance
 from core.training_runner import (
@@ -173,6 +180,33 @@ def invalidate_preflight(_changed_value: Any = None) -> tuple[dict[str, Any], st
     return _empty_preflight_state(), "参数已修改，之前的预检结果已失效，请重新运行训练预检。"
 
 
+def augmentation_controls_for_preset(preset: str) -> tuple[Any, ...]:
+    """Set fixed preset values or unlock the bounded custom controls."""
+    if preset == ONLINE_AUGMENTATION_LIGHT:
+        config = LIGHT_CONFIG
+        interactive = False
+    elif preset == ONLINE_AUGMENTATION_CUSTOM:
+        config = LIGHT_CONFIG
+        interactive = True
+    else:
+        config = OFF_CONFIG
+        interactive = False
+    values = [
+        config.repeat_factor,
+        config.affine_probability,
+        config.rotation_min_degrees,
+        config.rotation_max_degrees,
+        config.scale_min,
+        config.scale_max,
+        config.translate_fraction,
+        config.horizontal_flip_probability,
+        config.color_jitter_probability,
+        config.color_jitter_strength,
+        config.motion_blur_probability,
+    ]
+    return tuple(gr.update(value=value, interactive=interactive) for value in values)
+
+
 def run_training_preflight(
     config_path: str,
     train_images: str,
@@ -189,6 +223,18 @@ def run_training_preflight(
     num_workers: str,
     num_gpus: str,
     training_mode: str = "smoke",
+    augmentation_preset: str = "off",
+    augmentation_repeat_factor: Any = 1,
+    augmentation_affine_probability: Any = 0.0,
+    augmentation_rotation_min_degrees: Any = 0.0,
+    augmentation_rotation_max_degrees: Any = 0.0,
+    augmentation_scale_min: Any = 1.0,
+    augmentation_scale_max: Any = 1.0,
+    augmentation_translate_fraction: Any = 0.0,
+    augmentation_horizontal_flip_probability: Any = 0.0,
+    augmentation_color_jitter_probability: Any = 0.0,
+    augmentation_color_jitter_strength: Any = 0.0,
+    augmentation_motion_blur_probability: Any = 0.0,
 ) -> tuple[str, dict[str, Any], str]:
     """Stage A click handler. Returns (result_json, preflight_state, status_text)."""
     parse_errors: list[str] = []
@@ -240,6 +286,20 @@ def run_training_preflight(
             prepare_runtime=True,
             collect_import_metadata=True,
             training_mode=training_mode,
+            online_augmentation=OnlineAugmentationConfig(
+                preset=augmentation_preset,
+                repeat_factor=augmentation_repeat_factor,
+                affine_probability=augmentation_affine_probability,
+                rotation_min_degrees=augmentation_rotation_min_degrees,
+                rotation_max_degrees=augmentation_rotation_max_degrees,
+                scale_min=augmentation_scale_min,
+                scale_max=augmentation_scale_max,
+                translate_fraction=augmentation_translate_fraction,
+                horizontal_flip_probability=augmentation_horizontal_flip_probability,
+                color_jitter_probability=augmentation_color_jitter_probability,
+                color_jitter_strength=augmentation_color_jitter_strength,
+                motion_blur_probability=augmentation_motion_blur_probability,
+            ),
         )
     except Exception as exc:
         logger.exception("training_preflight_failed")
@@ -283,6 +343,7 @@ def run_training_preflight(
         "effective_pythonpath": preflight.effective_pythonpath,
         "distributed": (preflight.training_provenance or {}).get("distributed"),
         "dataset_identity": identity,
+        "online_augmentation": preflight.online_augmentation,
         "launch_token": uuid.uuid4().hex,
         "consumed": False,
     }
@@ -673,18 +734,138 @@ def build_training_tab() -> None:
         value="smoke",
     )
 
+    gr.Markdown("### 在线训练数据增强")
+    augmentation_preset = gr.Radio(
+        label="增强预设",
+        choices=[("关闭", "off"), ("轻量", "light"), ("自定义", "custom")],
+        value="off",
+    )
+    with gr.Accordion("增强参数", open=True):
+        with gr.Row():
+            augmentation_repeat_factor = gr.Slider(
+                label="每张源图每 epoch 的样本数",
+                minimum=1,
+                maximum=10,
+                step=1,
+                value=1,
+                interactive=False,
+            )
+            augmentation_affine_probability = gr.Slider(
+                label="仿射变换概率",
+                minimum=0,
+                maximum=1,
+                step=0.05,
+                value=0,
+                interactive=False,
+            )
+            augmentation_horizontal_flip_probability = gr.Slider(
+                label="水平翻转概率",
+                minimum=0,
+                maximum=1,
+                step=0.05,
+                value=0,
+                interactive=False,
+            )
+        with gr.Row():
+            augmentation_rotation_min_degrees = gr.Slider(
+                label="最小旋转角度",
+                minimum=-180,
+                maximum=180,
+                step=1,
+                value=0,
+                interactive=False,
+            )
+            augmentation_rotation_max_degrees = gr.Slider(
+                label="最大旋转角度",
+                minimum=-180,
+                maximum=180,
+                step=1,
+                value=0,
+                interactive=False,
+            )
+            augmentation_translate_fraction = gr.Slider(
+                label="最大平移比例",
+                minimum=0,
+                maximum=0.5,
+                step=0.01,
+                value=0,
+                interactive=False,
+            )
+        with gr.Row():
+            augmentation_scale_min = gr.Slider(
+                label="最小缩放倍数",
+                minimum=0.5,
+                maximum=2,
+                step=0.01,
+                value=1,
+                interactive=False,
+            )
+            augmentation_scale_max = gr.Slider(
+                label="最大缩放倍数",
+                minimum=0.5,
+                maximum=2,
+                step=0.01,
+                value=1,
+                interactive=False,
+            )
+        with gr.Row():
+            augmentation_color_jitter_probability = gr.Slider(
+                label="颜色抖动概率",
+                minimum=0,
+                maximum=1,
+                step=0.05,
+                value=0,
+                interactive=False,
+            )
+            augmentation_color_jitter_strength = gr.Slider(
+                label="颜色抖动强度",
+                minimum=0,
+                maximum=0.5,
+                step=0.01,
+                value=0,
+                interactive=False,
+            )
+            augmentation_motion_blur_probability = gr.Slider(
+                label="运动模糊概率",
+                minimum=0,
+                maximum=1,
+                step=0.05,
+                value=0,
+                interactive=False,
+            )
+
+    augmentation_controls = [
+        augmentation_repeat_factor,
+        augmentation_affine_probability,
+        augmentation_rotation_min_degrees,
+        augmentation_rotation_max_degrees,
+        augmentation_scale_min,
+        augmentation_scale_max,
+        augmentation_translate_fraction,
+        augmentation_horizontal_flip_probability,
+        augmentation_color_jitter_probability,
+        augmentation_color_jitter_strength,
+        augmentation_motion_blur_probability,
+    ]
+    augmentation_preset.change(
+        fn=augmentation_controls_for_preset,
+        inputs=[augmentation_preset],
+        outputs=augmentation_controls,
+    )
+
     preflight_btn = gr.Button("运行训练预检 (不会启动训练)", variant="primary")
     preflight_status = gr.Textbox(label="预检状态", interactive=False, value="尚未运行预检。")
     preflight_output = gr.Code(
         label="预检结果 (resolved paths / max_epochs / batch size / gradient accumulation / learning rate / "
-        "num_workers / effective batch size / prompt / runtime YAML / 最终训练命令)",
+        "num_workers / effective batch size / prompt / online augmentation / runtime YAML / 最终训练命令)",
         language="json",
     )
 
     preflight_inputs = [
         config_path, train_images, train_annotations, val_images, val_annotations, checkpoint,
         training_prompt, output_root, max_epochs, train_batch_size, gradient_accumulation_steps,
-        learning_rate, num_workers, num_gpus, training_mode,
+        learning_rate, num_workers, num_gpus, training_mode, augmentation_preset,
+        *augmentation_controls,
     ]
     split_btn.click(
         fn=build_dataset_split,
