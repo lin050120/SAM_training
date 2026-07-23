@@ -5,10 +5,49 @@ import math
 from pathlib import Path
 from typing import Any
 
+import torch
+from sam3.train.loss.sam3_loss import Sam3LossWrapper
 from sam3.train.trainer import Trainer
 from sam3.train.utils.train_utils import Phase
 
 TRAIN_LOSS_TRACE_FILENAME = "train_optimizer_step_loss.jsonl"
+
+
+class ValidationMatchingSam3LossWrapper(Sam3LossWrapper):
+    """Compute missing image-model matcher indices before validation loss."""
+
+    @staticmethod
+    def _loss_outputs(nested_out: dict[str, Any]):
+        yield nested_out
+        yield from nested_out.get("aux_outputs", [])
+        first_stage = nested_out.get("first_stage")
+        if first_stage is not None:
+            yield first_stage
+
+    def _ensure_validation_indices(
+        self,
+        nested_out: dict[str, Any],
+        targets: Any,
+    ) -> None:
+        # SAM3Image computes these while training, but skips them in eval mode
+        # when no interactive validation steps are configured.
+        if torch.is_grad_enabled():
+            return
+        missing_outputs = [
+            output for output in self._loss_outputs(nested_out) if "indices" not in output
+        ]
+        if not missing_outputs:
+            return
+        if self.matcher is None:
+            raise RuntimeError(
+                "validation loss requires matcher indices, but no matcher is configured"
+            )
+        for output in missing_outputs:
+            output["indices"] = self.matcher(output, targets)
+
+    def compute_loss(self, nested_out: dict[str, Any], targets: Any):
+        self._ensure_validation_indices(nested_out, targets)
+        return super().compute_loss(nested_out, targets)
 
 
 class LossTracingTrainer(Trainer):

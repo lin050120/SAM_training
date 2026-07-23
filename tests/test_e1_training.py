@@ -109,10 +109,13 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
             cfg,
             f"trainer.loss.{OmegaConf.select(cfg, 'scratch.collate_fn_val.dict_key')}._target_",
         )
-        self.assertEqual(val_loss_target, train_loss_target)
+        self.assertEqual(
+            train_loss_target,
+            "sam3.train.loss.sam3_loss.Sam3LossWrapper",
+        )
         self.assertEqual(
             val_loss_target,
-            "sam3.train.loss.sam3_loss.Sam3LossWrapper",
+            "core.training_loss_trace.ValidationMatchingSam3LossWrapper",
         )
 
     def test_no_overrides_fall_back_to_base_yaml(self) -> None:
@@ -2528,6 +2531,77 @@ class TrainingLossCurveTest(unittest.TestCase):
 
 
 class TrainingLossTraceTest(unittest.TestCase):
+    def test_validation_loss_computes_missing_matcher_indices(self) -> None:
+        import torch
+        from sam3.train.loss.sam3_loss import Sam3LossWrapper
+
+        from core.training_loss_trace import ValidationMatchingSam3LossWrapper
+
+        criterion = object.__new__(ValidationMatchingSam3LossWrapper)
+        torch.nn.Module.__init__(criterion)
+        criterion.matcher = mock.Mock(
+            side_effect=[
+                ("main_source", "main_target"),
+                ("aux_source", "aux_target"),
+                ("first_source", "first_target"),
+            ]
+        )
+        outputs = {
+            "pred_logits": object(),
+            "aux_outputs": [{"pred_logits": object()}],
+            "first_stage": {"pred_logits": object()},
+        }
+        targets = {"num_boxes": object()}
+        expected = {"core_loss": torch.tensor(1.0)}
+
+        with (
+            torch.no_grad(),
+            mock.patch.object(
+                Sam3LossWrapper,
+                "compute_loss",
+                return_value=expected,
+            ) as parent_compute,
+        ):
+            result = criterion.compute_loss(outputs, targets)
+
+        self.assertIs(result, expected)
+        self.assertEqual(criterion.matcher.call_count, 3)
+        self.assertEqual(
+            outputs["indices"],
+            ("main_source", "main_target"),
+        )
+        self.assertEqual(
+            outputs["aux_outputs"][0]["indices"],
+            ("aux_source", "aux_target"),
+        )
+        self.assertEqual(
+            outputs["first_stage"]["indices"],
+            ("first_source", "first_target"),
+        )
+        parent_compute.assert_called_once_with(outputs, targets)
+
+    def test_training_loss_does_not_replace_model_matching(self) -> None:
+        import torch
+        from sam3.train.loss.sam3_loss import Sam3LossWrapper
+
+        from core.training_loss_trace import ValidationMatchingSam3LossWrapper
+
+        criterion = object.__new__(ValidationMatchingSam3LossWrapper)
+        torch.nn.Module.__init__(criterion)
+        criterion.matcher = mock.Mock()
+        outputs = {"pred_logits": object()}
+        targets = {"num_boxes": object()}
+
+        with mock.patch.object(
+            Sam3LossWrapper,
+            "compute_loss",
+            return_value={"core_loss": torch.tensor(1.0)},
+        ):
+            criterion.compute_loss(outputs, targets)
+
+        criterion.matcher.assert_not_called()
+        self.assertNotIn("indices", outputs)
+
     def test_records_one_average_per_twenty_optimizer_steps(self) -> None:
         from core.training_loss_trace import LossTracingTrainer
 

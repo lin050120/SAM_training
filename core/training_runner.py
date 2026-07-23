@@ -610,13 +610,14 @@ def _prompt_config(category_id: int, prompt: str) -> dict[str, Any]:
 
 
 def _wire_validation_loss(cfg: Any) -> None:
-    """Use the train criterion for the validation collator's dataset key.
+    """Use a validation-compatible copy of the train criterion.
 
     SAM3 selects a loss by the single key returned by each collator. The base
     config uses ``all`` for train and ``book_spine`` for validation, while only
     ``all`` is wired to the real criterion. Without this explicit alias,
     validation silently falls back to DummyLoss and records zero for every
-    validation step.
+    validation step. SAM3Image also omits matcher indices in eval mode, so the
+    validation copy fills those indices before invoking the unchanged criterion.
     """
     train_key = OmegaConf.select(cfg, "scratch.collate_fn.dict_key")
     val_key = OmegaConf.select(cfg, "scratch.collate_fn_val.dict_key")
@@ -632,7 +633,18 @@ def _wire_validation_loss(cfg: Any) -> None:
             f"{train_key!r}"
         )
     if val_key != train_key:
-        loss_cfg[val_key] = f"${{trainer.loss.{train_key}}}"
+        train_loss_cfg = OmegaConf.to_container(
+            loss_cfg[train_key],
+            resolve=False,
+        )
+        if not isinstance(train_loss_cfg, dict):
+            raise ValueError(
+                f"trainer.loss.{train_key} must resolve to a loss configuration"
+            )
+        train_loss_cfg["_target_"] = (
+            "core.training_loss_trace.ValidationMatchingSam3LossWrapper"
+        )
+        loss_cfg[val_key] = OmegaConf.create(train_loss_cfg)
 
 
 def write_runtime_yaml(
