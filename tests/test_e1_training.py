@@ -101,6 +101,16 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         )
         self.assertEqual(OmegaConf.select(cfg, "trainer.val_epoch_freq"), 1)
         self.assertFalse(OmegaConf.select(cfg, "trainer.skip_first_val"))
+        self.assertEqual(
+            OmegaConf.select(cfg, "scratch.matcher._target_"),
+            "core.numerically_stable_matcher.NumericallyStableBinaryHungarianMatcherV2",
+        )
+        # The model's INTERNAL matcher (hardcoded in model_builder) is the one
+        # that crashed, so model construction must route through our wrapper.
+        self.assertEqual(
+            OmegaConf.select(cfg, "trainer.model._target_"),
+            "core.sam3_stable_model.build_sam3_image_model_with_stable_matcher",
+        )
         train_loss_target = OmegaConf.select(
             cfg,
             f"trainer.loss.{OmegaConf.select(cfg, 'scratch.collate_fn.dict_key')}._target_",

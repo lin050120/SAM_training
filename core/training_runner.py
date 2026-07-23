@@ -609,6 +609,43 @@ def _prompt_config(category_id: int, prompt: str) -> dict[str, Any]:
     }
 
 
+def _wire_numerically_stable_matcher(cfg: Any) -> None:
+    matcher_target = OmegaConf.select(cfg, "scratch.matcher._target_")
+    if matcher_target != "sam3.train.matcher.BinaryHungarianMatcherV2":
+        raise ValueError(
+            "base config scratch.matcher must use BinaryHungarianMatcherV2, got "
+            f"{matcher_target!r}"
+        )
+    OmegaConf.update(
+        cfg,
+        "scratch.matcher._target_",
+        "core.numerically_stable_matcher.NumericallyStableBinaryHungarianMatcherV2",
+        merge=False,
+    )
+
+
+def _wire_stable_model_matcher(cfg: Any) -> None:
+    """Route model construction through the stable-matcher wrapper.
+
+    The model's INTERNAL matcher (SAM3Image.matcher) is hardcoded in
+    sam3/model_builder.py and is the one that crashes; swapping scratch.matcher
+    only reaches the loss's matcher. Point the model _target_ at our wrapper so
+    the built model's matcher is replaced with the numerically stable drop-in.
+    """
+    model_target = OmegaConf.select(cfg, "trainer.model._target_")
+    if model_target != "sam3.model_builder.build_sam3_image_model":
+        raise ValueError(
+            "base config trainer.model must use sam3.model_builder.build_sam3_image_model, "
+            f"got {model_target!r}"
+        )
+    OmegaConf.update(
+        cfg,
+        "trainer.model._target_",
+        "core.sam3_stable_model.build_sam3_image_model_with_stable_matcher",
+        merge=False,
+    )
+
+
 def _wire_validation_loss(cfg: Any) -> None:
     """Use a validation-compatible copy of the train criterion.
 
@@ -829,6 +866,8 @@ def write_runtime_yaml(
             merge=False,
         )
 
+    _wire_numerically_stable_matcher(cfg)
+    _wire_stable_model_matcher(cfg)
     _wire_validation_loss(cfg)
     runtime_config.parent.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(cfg, runtime_config)
