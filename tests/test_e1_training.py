@@ -91,6 +91,14 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         self.assertEqual(OmegaConf.select(cfg, "scratch.num_val_workers"), 0)
         self.assertEqual(OmegaConf.select(cfg, "scratch.lr_vision_backbone"), 0.0)
         self.assertEqual(OmegaConf.select(cfg, "scratch.lr_language_backbone"), 0.0)
+        self.assertEqual(
+            OmegaConf.select(cfg, "trainer._target_"),
+            "core.training_loss_trace.LossTracingTrainer",
+        )
+        self.assertEqual(
+            OmegaConf.select(cfg, "trainer.train_loss_window_optimizer_steps"),
+            20,
+        )
         self.assertEqual(OmegaConf.select(cfg, "trainer.val_epoch_freq"), 1)
         self.assertFalse(OmegaConf.select(cfg, "trainer.skip_first_val"))
         train_loss_target = OmegaConf.select(
@@ -2416,8 +2424,8 @@ class TrainingMetricParsingTest(unittest.TestCase):
 
 
 class TrainingLossCurveTest(unittest.TestCase):
-    def test_reads_real_train_and_val_totals_and_ignores_placeholders(self) -> None:
-        from ui.training_process_manager import read_training_loss_curve
+    def test_reads_optimizer_step_train_averages_and_epoch_val_totals(self) -> None:
+        from ui.training_process_manager import read_training_loss_curves
 
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -2427,8 +2435,6 @@ class TrainingLossCurveTest(unittest.TestCase):
                 "\n".join(
                     [
                         "scratch:",
-                        "  collate_fn:",
-                        "    dict_key: all",
                         "  collate_fn_val:",
                         "    dict_key: book_spine",
                     ]
@@ -2437,12 +2443,24 @@ class TrainingLossCurveTest(unittest.TestCase):
             )
             log_dir = run_dir / "logs" / "cable"
             log_dir.mkdir(parents=True)
-            (log_dir / "train_stats.json").write_text(
+            (log_dir / "train_optimizer_step_loss.jsonl").write_text(
                 "\n".join(
                     [
-                        json.dumps({"Trainer/epoch": 0, "Losses/train_all_loss": 8.0}),
+                        json.dumps(
+                            {
+                                "optimizer_step": 20,
+                                "window_optimizer_steps": 20,
+                                "loss": 8.0,
+                            }
+                        ),
                         "{partial",
-                        json.dumps({"Trainer/epoch": 1, "Losses/train_all_loss": 6.5}),
+                        json.dumps(
+                            {
+                                "optimizer_step": 40,
+                                "window_optimizer_steps": 20,
+                                "loss": 6.5,
+                            }
+                        ),
                     ]
                 ),
                 encoding="utf-8",
@@ -2469,20 +2487,25 @@ class TrainingLossCurveTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            points = read_training_loss_curve(run_dir)
+            points = read_training_loss_curves(run_dir)
 
         self.assertEqual(
-            points,
+            points["train"],
             [
-                {"epoch": 0, "loss": 8.0, "split": "train"},
+                {"optimizer_step": 20, "loss": 8.0, "split": "train"},
+                {"optimizer_step": 40, "loss": 6.5, "split": "train"},
+            ],
+        )
+        self.assertEqual(
+            points["val"],
+            [
                 {"epoch": 0, "loss": 7.5, "split": "val"},
-                {"epoch": 1, "loss": 6.5, "split": "train"},
                 {"epoch": 1, "loss": 6.0, "split": "val"},
             ],
         )
 
     def test_legacy_dummy_val_loss_is_not_plotted_as_real_loss(self) -> None:
-        from ui.training_process_manager import read_training_loss_curve
+        from ui.training_process_manager import read_training_loss_curves
 
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
@@ -2499,9 +2522,45 @@ class TrainingLossCurveTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            points = read_training_loss_curve(run_dir)
+            points = read_training_loss_curves(run_dir)
 
-        self.assertEqual(points, [])
+        self.assertEqual(points, {"train": [], "val": []})
+
+
+class TrainingLossTraceTest(unittest.TestCase):
+    def test_records_one_average_per_twenty_optimizer_steps(self) -> None:
+        from core.training_loss_trace import LossTracingTrainer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = object.__new__(LossTracingTrainer)
+            trainer.distributed_rank = 0
+            trainer.gradient_accumulation_steps = 4
+            trainer.train_loss_window_optimizer_steps = 20
+            trainer._trace_micro_loss_sum = 0.0
+            trainer._trace_micro_sample_count = 0
+            trainer._trace_optimizer_losses = []
+            trainer._train_loss_trace_path = Path(tmp) / "train_optimizer_step_loss.jsonl"
+
+            micro_step = 0
+            for optimizer_step in range(1, 41):
+                for _ in range(4):
+                    micro_step += 1
+                    trainer.steps = {"train": micro_step}
+                    trainer._record_training_microbatch(float(optimizer_step), 1)
+
+            records = [
+                json.loads(line)
+                for line in trainer._train_loss_trace_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["optimizer_step"], 20)
+        self.assertEqual(records[0]["window_optimizer_steps"], 20)
+        self.assertAlmostEqual(records[0]["loss"], 10.5)
+        self.assertEqual(records[1]["optimizer_step"], 40)
+        self.assertAlmostEqual(records[1]["loss"], 30.5)
 
 
 class TrainingRunHistoryRobustnessTest(unittest.TestCase):

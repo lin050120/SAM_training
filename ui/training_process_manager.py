@@ -410,59 +410,87 @@ def parse_training_metrics(log_text: str) -> dict[str, str]:
     return result
 
 
-def read_training_loss_curve(run_dir: Path | None) -> list[dict[str, Any]]:
-    """Read completed epoch-level train/val losses without touching the trainer."""
+def read_training_loss_curves(
+    run_dir: Path | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read 20-step train averages and epoch-level validation losses."""
+    empty = {"train": [], "val": []}
     if run_dir is None:
-        return []
+        return empty
     resolved_run = run_dir.expanduser().resolve(strict=False)
     runtime_yaml = resolved_run / "config" / "runtime_config.yaml"
-    dataset_keys = {"train": "all", "val": "book_spine"}
+    val_dataset_key = "book_spine"
     try:
         cfg = OmegaConf.load(runtime_yaml)
-        for split, config_path in (
-            ("train", "scratch.collate_fn.dict_key"),
-            ("val", "scratch.collate_fn_val.dict_key"),
-        ):
-            configured_key = OmegaConf.select(cfg, config_path)
-            if isinstance(configured_key, str) and configured_key.strip():
-                dataset_keys[split] = configured_key
+        configured_key = OmegaConf.select(cfg, "scratch.collate_fn_val.dict_key")
+        if isinstance(configured_key, str) and configured_key.strip():
+            val_dataset_key = configured_key
     except (OSError, ValueError, TypeError, OmegaConfBaseException):
         # Legacy or partially-created runs use the authoritative default keys.
         pass
 
-    points: dict[tuple[str, float], dict[str, Any]] = {}
+    train_points: dict[int, dict[str, Any]] = {}
+    val_points: dict[float, dict[str, Any]] = {}
     logs_root = resolved_run / "logs"
-    for split in ("train", "val"):
-        loss_field = f"Losses/{split}_{dataset_keys[split]}_loss"
-        stats_name = f"{split}_stats.json"
-        for stats_path in sorted(logs_root.glob(f"*/{stats_name}")):
-            if not stats_path.is_file() or not _path_is_inside(stats_path, resolved_run):
+    for trace_path in sorted(logs_root.glob("*/train_optimizer_step_loss.jsonl")):
+        if not trace_path.is_file() or not _path_is_inside(trace_path, resolved_run):
+            continue
+        try:
+            lines = trace_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
                 continue
             try:
-                lines = stats_path.read_text(encoding="utf-8").splitlines()
-            except OSError:
+                optimizer_step = int(record["optimizer_step"])
+                loss = float(record["loss"])
+            except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            for line in lines:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                try:
-                    epoch = float(record["Trainer/epoch"])
-                    loss = float(record[loss_field])
-                except (KeyError, TypeError, ValueError, OverflowError):
-                    continue
-                if not math.isfinite(epoch) or not math.isfinite(loss):
-                    continue
-                display_epoch: int | float = int(epoch) if epoch.is_integer() else epoch
-                points[(split, epoch)] = {
-                    "epoch": display_epoch,
-                    "loss": loss,
-                    "split": split,
-                }
-    return sorted(points.values(), key=lambda item: (float(item["epoch"]), item["split"]))
+            if optimizer_step < 1 or not math.isfinite(loss):
+                continue
+            train_points[optimizer_step] = {
+                "optimizer_step": optimizer_step,
+                "loss": loss,
+                "split": "train",
+            }
+
+    val_loss_field = f"Losses/val_{val_dataset_key}_loss"
+    for stats_path in sorted(logs_root.glob("*/val_stats.json")):
+        if not stats_path.is_file() or not _path_is_inside(stats_path, resolved_run):
+            continue
+        try:
+            lines = stats_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            try:
+                epoch = float(record["Trainer/epoch"])
+                loss = float(record[val_loss_field])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(epoch) or not math.isfinite(loss):
+                continue
+            display_epoch: int | float = int(epoch) if epoch.is_integer() else epoch
+            val_points[epoch] = {
+                "epoch": display_epoch,
+                "loss": loss,
+                "split": "val",
+            }
+    return {
+        "train": [train_points[key] for key in sorted(train_points)],
+        "val": [val_points[key] for key in sorted(val_points)],
+    }
 
 
 def _iso(ts: float | None) -> str | None:

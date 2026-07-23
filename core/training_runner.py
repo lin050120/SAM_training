@@ -717,6 +717,18 @@ def write_runtime_yaml(
         OmegaConf.update(cfg, "scratch.num_train_workers", int(num_workers), merge=False)
     if learning_rate is not None:
         OmegaConf.update(cfg, "scratch.lr_transformer", float(learning_rate), merge=False)
+    OmegaConf.update(
+        cfg,
+        "trainer._target_",
+        "core.training_loss_trace.LossTracingTrainer",
+        merge=False,
+    )
+    OmegaConf.update(
+        cfg,
+        "trainer.train_loss_window_optimizer_steps",
+        20,
+        merge=False,
+    )
     OmegaConf.update(cfg, "trainer.val_epoch_freq", 1, merge=False)
     OmegaConf.update(cfg, "trainer.skip_first_val", False, merge=False)
 
