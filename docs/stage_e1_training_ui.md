@@ -124,6 +124,8 @@ conda run -n sam301 python \
 - 完整原始日志会一直保留在内存快照里，训练结束（含被停止）后仍可在页面上看到全部历史输出。
 - `training_summary.json` 由服务端进程生命周期回调生成：reader 线程读完 stdout/stderr、记录 exit code 和 finished_at 后原子写入 summary。浏览器关闭、刷新、网络断开或不再调用 Gradio polling callback，都不影响 completed/failed/cancelled 最终落盘。UI 轮询只负责显示当前状态；浏览器重新连接后，历史页面从磁盘读取 `training_summary.json` 恢复最终状态。
 - 官方训练器自己也会往 `<run_dir>/logs/<task_slug>/`（书脊任务为 `logs/book_spine/`）和 `<run_dir>/tensorboard/` 写日志（runtime YAML 里的 `trainer.logging.log_dir`/`trainer.logging.tensorboard_writer.log_dir` 已经指向本次 run 目录），这是训练器自身的行为，UI 没有改动。
+- `train_stats.json` 记录训练 loss；`val_stats.json` 和 TensorBoard 记录真实的验证总 loss 及各分项 loss。新生成的运行配置固定使用 `trainer.val_epoch_freq=1` 和 `trainer.skip_first_val=false`，因此每个训练 epoch 完成后都会产生一组 val loss。实际验证总 loss 字段为 `Losses/val_book_spine_loss`；`book_spine` 是保留的内部兼容键，即使任务是 cable，该字段计算的仍是本次 cable 验证集。SAM3 还会输出未被验证 batch 使用的占位字段 `Losses/val_all_loss = 0`、`Losses/val_default_loss = 0`，不要将它们当作真实验证 loss。2026-07-23 之前生成的运行配置曾让验证键落到 `DummyLoss`，其历史 `val loss = 0` 无法事后恢复；新生成的运行配置会将验证键绑定到与训练相同的真实 SAM3 loss。
+- 训练页面每秒读取当前 run 的 `train_stats.json` 和 `val_stats.json` 并刷新 Train/Val Loss 曲线。曲线只使用每个已完成 epoch 的总 loss，不解析 stdout，不绘制占位 loss；train 点在一个训练 epoch 完成后出现，val 点在一次验证完成后出现。
 
 ## 7. Checkpoint 位置
 

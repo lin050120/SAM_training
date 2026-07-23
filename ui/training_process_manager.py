@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -11,6 +12,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from omegaconf import OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 
 from core.config import (
     DEFAULT_CONDA_ENV,
@@ -404,6 +408,61 @@ def parse_training_metrics(log_text: str) -> dict[str, str]:
     except Exception:
         logger.exception("training_metric_parse_failed")
     return result
+
+
+def read_training_loss_curve(run_dir: Path | None) -> list[dict[str, Any]]:
+    """Read completed epoch-level train/val losses without touching the trainer."""
+    if run_dir is None:
+        return []
+    resolved_run = run_dir.expanduser().resolve(strict=False)
+    runtime_yaml = resolved_run / "config" / "runtime_config.yaml"
+    dataset_keys = {"train": "all", "val": "book_spine"}
+    try:
+        cfg = OmegaConf.load(runtime_yaml)
+        for split, config_path in (
+            ("train", "scratch.collate_fn.dict_key"),
+            ("val", "scratch.collate_fn_val.dict_key"),
+        ):
+            configured_key = OmegaConf.select(cfg, config_path)
+            if isinstance(configured_key, str) and configured_key.strip():
+                dataset_keys[split] = configured_key
+    except (OSError, ValueError, TypeError, OmegaConfBaseException):
+        # Legacy or partially-created runs use the authoritative default keys.
+        pass
+
+    points: dict[tuple[str, float], dict[str, Any]] = {}
+    logs_root = resolved_run / "logs"
+    for split in ("train", "val"):
+        loss_field = f"Losses/{split}_{dataset_keys[split]}_loss"
+        stats_name = f"{split}_stats.json"
+        for stats_path in sorted(logs_root.glob(f"*/{stats_name}")):
+            if not stats_path.is_file() or not _path_is_inside(stats_path, resolved_run):
+                continue
+            try:
+                lines = stats_path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    epoch = float(record["Trainer/epoch"])
+                    loss = float(record[loss_field])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(epoch) or not math.isfinite(loss):
+                    continue
+                display_epoch: int | float = int(epoch) if epoch.is_integer() else epoch
+                points[(split, epoch)] = {
+                    "epoch": display_epoch,
+                    "loss": loss,
+                    "split": split,
+                }
+    return sorted(points.values(), key=lambda item: (float(item["epoch"]), item["split"]))
 
 
 def _iso(ts: float | None) -> str | None:

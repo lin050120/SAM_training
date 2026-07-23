@@ -193,6 +193,7 @@ JA: dict[str, str] = {
         "discovered checkpoints/epoch/loss/lr/gpu memory — 指標解析は best-effort、"
         "解析できない場合は unavailable と表示)",
     "training_summary.json (训练结束后生成)": "training_summary.json（学習終了後に生成）",
+    "Train / Val Loss 曲线": "Train / Val Loss 曲線",
     "### 阶段 C: 从最近完整 Checkpoint 恢复": "### ステージ C: 最新の完全な Checkpoint から再開",
     "训练 run（含 checkpoint.pt）": "学習 run（checkpoint.pt を含む）",
     "刷新可恢复 run": "再開可能な run を更新",

@@ -100,10 +100,12 @@ def test_light_inserts_expected_train_order_and_leaves_val_unchanged(tmp_path: P
     assert inserted[7].kernel_size == 3
 
 
-def test_repeat_factor_switches_only_train_dataset_target(tmp_path: Path) -> None:
+def test_repeat_factor_above_ten_switches_only_train_dataset_target(
+    tmp_path: Path,
+) -> None:
     requested = OnlineAugmentationConfig(
         preset="custom",
-        repeat_factor=3,
+        repeat_factor=25,
         affine_probability=0.5,
         rotation_min_degrees=-10,
         rotation_max_degrees=10,
@@ -119,7 +121,7 @@ def test_repeat_factor_switches_only_train_dataset_target(tmp_path: Path) -> Non
     assert runtime.trainer.data.train.dataset._target_ == (
         "core.training_augmentation.RepeatedSam3ImageDataset"
     )
-    assert runtime.trainer.data.train.dataset.repeat_factor == 3
+    assert runtime.trainer.data.train.dataset.repeat_factor == 25
     assert runtime.trainer.data.val.dataset._target_ == (
         "sam3.train.data.sam3_image_dataset.Sam3ImageDataset"
     )
@@ -131,7 +133,7 @@ def test_hydra_instantiates_repeated_dataset_and_online_transforms(tmp_path: Pat
 
     requested = OnlineAugmentationConfig(
         preset="custom",
-        repeat_factor=2,
+        repeat_factor=25,
         affine_probability=0.5,
         rotation_min_degrees=-8,
         rotation_max_degrees=8,
@@ -147,14 +149,14 @@ def test_hydra_instantiates_repeated_dataset_and_online_transforms(tmp_path: Pat
     dataset = instantiate(runtime.trainer.data.train.dataset)
     assert type(dataset).__module__ == "core.training_augmentation"
     assert type(dataset).__name__ == "RepeatedSam3ImageDataset"
-    assert len(dataset) == dataset._source_length * 2
+    assert len(dataset) == dataset._source_length * 25
     assert len(dataset._transforms[0].transforms) == 14
 
 
 @pytest.mark.parametrize(
     "changes, expected_error",
     [
-        ({"repeat_factor": 11}, "repeat_factor"),
+        ({"repeat_factor": 0}, "repeat_factor"),
         ({"rotation_min_degrees": 20, "rotation_max_degrees": -20}, "rotation_min_degrees"),
         ({"scale_min": 1.5, "scale_max": 1.0}, "scale_min"),
         ({"translate_fraction": 0.6}, "translate_fraction"),

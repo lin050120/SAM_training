@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from sam3.train.data.sam3_image_dataset import Sam3ImageDataset
 
 
@@ -7,13 +9,21 @@ class RepeatedSam3ImageDataset(Sam3ImageDataset):
     """Repeat source indices while generating fresh online transforms per fetch."""
 
     def __init__(self, *args, repeat_factor: int = 1, **kwargs):
-        if int(repeat_factor) != repeat_factor or not 1 <= int(repeat_factor) <= 10:
-            raise ValueError("repeat_factor must be a whole number between 1 and 10")
+        try:
+            parsed_repeat_factor = int(repeat_factor)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("repeat_factor must be a positive whole number") from exc
+        if parsed_repeat_factor != repeat_factor or parsed_repeat_factor < 1:
+            raise ValueError("repeat_factor must be a positive whole number")
         super().__init__(*args, **kwargs)
-        self.repeat_factor = int(repeat_factor)
+        self.repeat_factor = parsed_repeat_factor
         self._source_length = super().__len__()
         if self._source_length < 1:
             raise ValueError("cannot repeat an empty SAM3 image dataset")
+        if self.repeat_factor > sys.maxsize // self._source_length:
+            raise ValueError(
+                "repeat_factor is too large for the repeated dataset length"
+            )
         self._fetching_source_item = False
 
     def __len__(self) -> int:

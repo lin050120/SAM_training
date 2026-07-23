@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import gradio as gr
+import pandas as pd
 
 from core.config import (
     BOOK_ROOT,
@@ -40,6 +41,7 @@ from ui.training_process_manager import (
     inspect_resumable_training_run,
     list_resumable_training_runs,
     make_training_summary_callback,
+    read_training_loss_curve,
     training_process_manager,
     training_snapshot,
     validate_can_start_training,
@@ -67,6 +69,7 @@ STAGE_B_NOTE = "只有满足预检通过、runtime YAML/checkpoint/数据均存�
 
 _preflight_launch_lock = threading.Lock()
 _consumed_preflight_tokens: set[str] = set()
+LOSS_CURVE_COLUMNS = ["epoch", "loss", "split"]
 
 
 def _parse_optional_nonnegative_float(value: Any) -> tuple[float | None, str | None]:
@@ -542,6 +545,16 @@ def pause_training() -> str:
     )
 
 
+def current_training_loss_curve() -> pd.DataFrame:
+    """Return the active or most recently finished run's epoch-level losses."""
+    _log, state = training_process_manager.snapshot()
+    run_dir_value = state.metadata.get("run_dir")
+    points = read_training_loss_curve(
+        Path(run_dir_value) if run_dir_value else None
+    )
+    return pd.DataFrame(points, columns=LOSS_CURVE_COLUMNS)
+
+
 def resumable_run_details(run_dir: str | None) -> str:
     return format_json(inspect_resumable_training_run(run_dir))
 
@@ -742,11 +755,11 @@ def build_training_tab() -> None:
     )
     with gr.Accordion("增强参数", open=True):
         with gr.Row():
-            augmentation_repeat_factor = gr.Slider(
+            augmentation_repeat_factor = gr.Number(
                 label="每张源图每 epoch 的样本数",
                 minimum=1,
-                maximum=10,
                 step=1,
+                precision=0,
                 value=1,
                 interactive=False,
             )
@@ -915,6 +928,26 @@ def build_training_tab() -> None:
         language="json",
     )
     training_summary_box = gr.Code(label="training_summary.json (训练结束后生成)", language="json")
+    training_loss_plot = gr.LinePlot(
+        value=pd.DataFrame(columns=LOSS_CURVE_COLUMNS),
+        x="epoch",
+        y="loss",
+        color="split",
+        color_map={"train": "#18794e", "val": "#d1495b"},
+        title="Train / Val Loss",
+        x_title="Epoch",
+        y_title="Loss",
+        height=340,
+        label="Train / Val Loss 曲线",
+        show_fullscreen_button=True,
+    )
+    loss_curve_timer = gr.Timer(value=1.0, active=True)
+    loss_curve_timer.tick(
+        fn=current_training_loss_curve,
+        inputs=[],
+        outputs=[training_loss_plot],
+        queue=False,
+    )
 
     gr.Markdown("### 阶段 C: 从最近完整 Checkpoint 恢复")
     initial_resume_runs = list_resumable_training_runs()

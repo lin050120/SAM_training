@@ -609,6 +609,32 @@ def _prompt_config(category_id: int, prompt: str) -> dict[str, Any]:
     }
 
 
+def _wire_validation_loss(cfg: Any) -> None:
+    """Use the train criterion for the validation collator's dataset key.
+
+    SAM3 selects a loss by the single key returned by each collator. The base
+    config uses ``all`` for train and ``book_spine`` for validation, while only
+    ``all`` is wired to the real criterion. Without this explicit alias,
+    validation silently falls back to DummyLoss and records zero for every
+    validation step.
+    """
+    train_key = OmegaConf.select(cfg, "scratch.collate_fn.dict_key")
+    val_key = OmegaConf.select(cfg, "scratch.collate_fn_val.dict_key")
+    if not isinstance(train_key, str) or not train_key.strip():
+        raise ValueError("base config must define scratch.collate_fn.dict_key")
+    if not isinstance(val_key, str) or not val_key.strip():
+        raise ValueError("base config must define scratch.collate_fn_val.dict_key")
+
+    loss_cfg = OmegaConf.select(cfg, "trainer.loss")
+    if loss_cfg is None or train_key not in loss_cfg:
+        raise ValueError(
+            "base config trainer.loss must define the train collator key "
+            f"{train_key!r}"
+        )
+    if val_key != train_key:
+        loss_cfg[val_key] = f"${{trainer.loss.{train_key}}}"
+
+
 def write_runtime_yaml(
     base_config: Path,
     runtime_config: Path,
@@ -691,6 +717,8 @@ def write_runtime_yaml(
         OmegaConf.update(cfg, "scratch.num_train_workers", int(num_workers), merge=False)
     if learning_rate is not None:
         OmegaConf.update(cfg, "scratch.lr_transformer", float(learning_rate), merge=False)
+    OmegaConf.update(cfg, "trainer.val_epoch_freq", 1, merge=False)
+    OmegaConf.update(cfg, "trainer.skip_first_val", False, merge=False)
 
     # Online augmentation is inserted only into the train ComposeAPI, immediately
     # after DecodeRle and before the base resize/pad transforms. Validation remains
@@ -777,6 +805,7 @@ def write_runtime_yaml(
             merge=False,
         )
 
+    _wire_validation_loss(cfg)
     runtime_config.parent.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(cfg, runtime_config)
 

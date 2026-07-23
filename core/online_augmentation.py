@@ -181,8 +181,12 @@ def resolve_online_augmentation_config(
         motion_blur_kernel_size=3,
     )
 
+    if config.repeat_factor < 1:
+        errors.append(
+            f"online augmentation repeat_factor must be at least 1, got {config.repeat_factor}"
+        )
+
     bounds = [
-        ("repeat_factor", config.repeat_factor, 1, 10),
         ("affine_probability", config.affine_probability, 0.0, 1.0),
         ("rotation_min_degrees", config.rotation_min_degrees, -180.0, 180.0),
         ("rotation_max_degrees", config.rotation_max_degrees, -180.0, 180.0),

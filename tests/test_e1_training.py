@@ -91,6 +91,21 @@ class RuntimeYamlOverrideTest(unittest.TestCase):
         self.assertEqual(OmegaConf.select(cfg, "scratch.num_val_workers"), 0)
         self.assertEqual(OmegaConf.select(cfg, "scratch.lr_vision_backbone"), 0.0)
         self.assertEqual(OmegaConf.select(cfg, "scratch.lr_language_backbone"), 0.0)
+        self.assertEqual(OmegaConf.select(cfg, "trainer.val_epoch_freq"), 1)
+        self.assertFalse(OmegaConf.select(cfg, "trainer.skip_first_val"))
+        train_loss_target = OmegaConf.select(
+            cfg,
+            f"trainer.loss.{OmegaConf.select(cfg, 'scratch.collate_fn.dict_key')}._target_",
+        )
+        val_loss_target = OmegaConf.select(
+            cfg,
+            f"trainer.loss.{OmegaConf.select(cfg, 'scratch.collate_fn_val.dict_key')}._target_",
+        )
+        self.assertEqual(val_loss_target, train_loss_target)
+        self.assertEqual(
+            val_loss_target,
+            "sam3.train.loss.sam3_loss.Sam3LossWrapper",
+        )
 
     def test_no_overrides_fall_back_to_base_yaml(self) -> None:
         from core import training_runner
@@ -2398,6 +2413,95 @@ class TrainingMetricParsingTest(unittest.TestCase):
 
         metrics = parse_training_metrics("")
         self.assertTrue(all(v == "unavailable" for v in metrics.values()))
+
+
+class TrainingLossCurveTest(unittest.TestCase):
+    def test_reads_real_train_and_val_totals_and_ignores_placeholders(self) -> None:
+        from ui.training_process_manager import read_training_loss_curve
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            runtime_yaml = run_dir / "config" / "runtime_config.yaml"
+            runtime_yaml.parent.mkdir()
+            runtime_yaml.write_text(
+                "\n".join(
+                    [
+                        "scratch:",
+                        "  collate_fn:",
+                        "    dict_key: all",
+                        "  collate_fn_val:",
+                        "    dict_key: book_spine",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            log_dir = run_dir / "logs" / "cable"
+            log_dir.mkdir(parents=True)
+            (log_dir / "train_stats.json").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"Trainer/epoch": 0, "Losses/train_all_loss": 8.0}),
+                        "{partial",
+                        json.dumps({"Trainer/epoch": 1, "Losses/train_all_loss": 6.5}),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (log_dir / "val_stats.json").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "Trainer/epoch": 0,
+                                "Losses/val_all_loss": 0,
+                                "Losses/val_default_loss": 0,
+                                "Losses/val_book_spine_loss": 7.5,
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "Trainer/epoch": 1,
+                                "Losses/val_book_spine_loss": 6.0,
+                            }
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            points = read_training_loss_curve(run_dir)
+
+        self.assertEqual(
+            points,
+            [
+                {"epoch": 0, "loss": 8.0, "split": "train"},
+                {"epoch": 0, "loss": 7.5, "split": "val"},
+                {"epoch": 1, "loss": 6.5, "split": "train"},
+                {"epoch": 1, "loss": 6.0, "split": "val"},
+            ],
+        )
+
+    def test_legacy_dummy_val_loss_is_not_plotted_as_real_loss(self) -> None:
+        from ui.training_process_manager import read_training_loss_curve
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            log_dir = run_dir / "logs" / "book_spine"
+            log_dir.mkdir(parents=True)
+            (log_dir / "val_stats.json").write_text(
+                json.dumps(
+                    {
+                        "Trainer/epoch": 5,
+                        "Losses/val_all_loss": 0,
+                        "Losses/val_default_loss": 0,
+                        "Losses/val_book_spine_core_loss": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            points = read_training_loss_curve(run_dir)
+
+        self.assertEqual(points, [])
 
 
 class TrainingRunHistoryRobustnessTest(unittest.TestCase):

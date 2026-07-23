@@ -17,7 +17,7 @@ Start with Light for one complete train/validation cycle. Increase the repeat fa
 
 ## Parameters
 
-- **Samples per source image per epoch**: 1 to 10. A value of 3 reads each source image three times per epoch with independent random transforms. It does not create image files on disk.
+- **Samples per source image per epoch**: enter an integer greater than or equal to 1; there is no fixed application-level maximum. A value of 25 reads each source image 25 times per epoch with independent random transforms. Total samples per epoch equal the number of source images multiplied by this value, so training time grows proportionally. It does not create image files on disk.
 - **Affine probability**: probability of applying the combined rotation, scale, and translation transform.
 - **Minimum/maximum rotation**: -180 to 180 degrees; minimum must not exceed maximum.
 - **Minimum/maximum scale**: 0.5 to 2.0; minimum must not exceed maximum.
