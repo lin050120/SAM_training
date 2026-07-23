@@ -252,6 +252,14 @@ def build_online_augmentation_transforms(
             "_target_": "sam3.train.transforms.segmentation.RecomputeBoxesFromMasks",
         },
         {
+            # Drop degenerate sliver boxes that affine can create, before they
+            # reach the Hungarian matcher and make its GIoU divide by zero.
+            "_target_": "sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries",
+            "query_filter": {
+                "_target_": "core.augmentation_filters.FilterTinyBoxes",
+            },
+        },
+        {
             "_target_": "sam3.train.transforms.basic_for_api.RandomSelectAPI",
             "p": config.color_jitter_probability,
             "transforms1": {

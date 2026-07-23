@@ -27,7 +27,7 @@
 
 ## Mask 与数据范围
 
-几何变换对图片和实例 mask 使用同一组随机参数；mask 使用 nearest-neighbor 插值，变换后重新从 mask 计算 bbox 和 area。在线增强只作用于 train，val、test 和推理不使用这些随机变换。
+几何变换对图片和实例 mask 使用同一组随机参数；mask 使用 nearest-neighbor 插值，变换后重新从 mask 计算 bbox 和 area。变换后会自动丢弃退化的极薄目标框（宽或高不足图像边长 0.5% 的目标），避免旋转/平移把 mask 压成 1-2 像素的碎片后，其归一化后近似零面积的框让 Hungarian matcher 的 GIoU 出现除零（`matrix contains invalid numeric entries` 崩溃）。真实书脊即使很细也远大于该阈值，不会被误删。在线增强只作用于 train，val、test 和推理不使用这些随机变换。
 
 本功能不包含随机裁剪、噪声、cutout 或 mixup，避免改变已人工审核目标的语义或把目标裁掉。训练预检会拒绝越界或 min/max 颠倒的参数。
 

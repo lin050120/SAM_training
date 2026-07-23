@@ -78,6 +78,7 @@ def test_light_inserts_expected_train_order_and_leaves_val_unchanged(tmp_path: P
         "sam3.train.transforms.basic_for_api.RandomHorizontalFlip",
         "sam3.train.transforms.basic_for_api.RandomSelectAPI",
         "sam3.train.transforms.segmentation.RecomputeBoxesFromMasks",
+        "sam3.train.transforms.filter_query_transforms.FlexibleFilterFindGetQueries",
         "sam3.train.transforms.basic_for_api.RandomSelectAPI",
         "sam3.train.transforms.basic_for_api.MotionBlur",
         "sam3.train.transforms.basic_for_api.RandomResizeAPI",
@@ -95,9 +96,13 @@ def test_light_inserts_expected_train_order_and_leaves_val_unchanged(tmp_path: P
     assert list(inserted[4].transforms1.degrees) == [-8.0, 8.0]
     assert list(inserted[4].transforms1.scale) == [0.9, 1.1]
     assert list(inserted[4].transforms1.translate) == [0.05, 0.05]
-    assert inserted[6].p == pytest.approx(0.3)
-    assert inserted[7].p == pytest.approx(0.1)
-    assert inserted[7].kernel_size == 3
+    assert inserted[5]._target_ == (
+        "sam3.train.transforms.segmentation.RecomputeBoxesFromMasks"
+    )
+    assert inserted[6].query_filter._target_ == "core.augmentation_filters.FilterTinyBoxes"
+    assert inserted[7].p == pytest.approx(0.3)
+    assert inserted[8].p == pytest.approx(0.1)
+    assert inserted[8].kernel_size == 3
 
 
 def test_repeat_factor_above_ten_switches_only_train_dataset_target(
@@ -150,7 +155,7 @@ def test_hydra_instantiates_repeated_dataset_and_online_transforms(tmp_path: Pat
     assert type(dataset).__module__ == "core.training_augmentation"
     assert type(dataset).__name__ == "RepeatedSam3ImageDataset"
     assert len(dataset) == dataset._source_length * 25
-    assert len(dataset._transforms[0].transforms) == 14
+    assert len(dataset._transforms[0].transforms) == 15
 
 
 @pytest.mark.parametrize(
@@ -312,6 +317,68 @@ def test_fixed_affine_keeps_image_and_mask_aligned_and_recomputes_metadata() -> 
     expected_box = masks_to_boxes(transformed_mask)
     assert torch.equal(transformed.images[0].objects[0].bbox, expected_box)
     assert transformed.images[0].objects[0].area == int(transformed_mask.sum())
+
+
+def test_filter_tiny_boxes_marks_only_sliver_objects() -> None:
+    from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object
+
+    from core.augmentation_filters import FilterTinyBoxes
+
+    normal = Object(bbox=torch.tensor([[10.0, 10.0, 50.0, 60.0]]), area=1.0)
+    thin_width = Object(bbox=torch.tensor([[30.0, 30.0, 30.3, 90.0]]), area=1.0)
+    thin_height = Object(bbox=torch.tensor([[30.0, 30.0, 90.0, 30.2]]), area=1.0)
+    datapoint = Datapoint(
+        find_queries=[],
+        images=[
+            Image(
+                data=PILImage.new("RGB", (100, 100)),
+                objects=[normal, thin_width, thin_height],
+                size=(100, 100),
+            )
+        ],
+    )
+    # min side = 0.005 * 100 = 0.5 px, so the 0.3 px and 0.2 px sides are dropped.
+    filt = FilterTinyBoxes()
+    filt.identify_queries_to_filter(datapoint)
+    assert filt.obj_ids_to_filter == {(0, 1), (0, 2)}
+
+
+def test_filter_tiny_boxes_removes_sliver_and_remaps_query_via_wrapper() -> None:
+    from sam3.train.data.sam3_image_dataset import (
+        Datapoint,
+        FindQueryLoaded,
+        Image,
+        Object,
+    )
+    from sam3.train.transforms.filter_query_transforms import (
+        FlexibleFilterFindGetQueries,
+    )
+
+    from core.augmentation_filters import FilterTinyBoxes
+
+    keep = Object(bbox=torch.tensor([[10.0, 10.0, 80.0, 80.0]]), area=1.0)
+    sliver = Object(bbox=torch.tensor([[40.0, 40.0, 40.2, 90.0]]), area=1.0)
+    query = FindQueryLoaded(
+        query_text="book spine",
+        image_id=0,
+        object_ids_output=[0, 1],
+        is_exhaustive=True,
+    )
+    datapoint = Datapoint(
+        find_queries=[query],
+        images=[
+            Image(
+                data=PILImage.new("RGB", (100, 100)),
+                objects=[keep, sliver],
+                size=(100, 100),
+            )
+        ],
+    )
+    out = FlexibleFilterFindGetQueries(query_filter=FilterTinyBoxes())(datapoint)
+    # The sliver object is gone; the surviving object is reindexed to 0.
+    assert len(out.images[0].objects) == 1
+    assert torch.equal(out.images[0].objects[0].bbox, keep.bbox)
+    assert out.find_queries[0].object_ids_output == [0]
 
 
 def test_ui_preset_updates_and_japanese_labels_are_registered() -> None:

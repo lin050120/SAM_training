@@ -27,7 +27,7 @@
 
 ## Mask と適用範囲
 
-幾何変換では画像と全インスタンス mask に同じランダムパラメータを使います。mask は nearest-neighbor で補間し、変換後の mask から bbox と area を再計算します。オンライン拡張は train のみに適用され、val、test、推論には適用されません。
+幾何変換では画像と全インスタンス mask に同じランダムパラメータを使います。mask は nearest-neighbor で補間し、変換後の mask から bbox と area を再計算します。再計算後、退化した極細ターゲット（box の幅または高さが画像辺の 0.5% 未満）は自動的に除去します。回転・平行移動で mask が 1〜2px の断片になると、その正規化 box がほぼ面積ゼロとなり、Hungarian matcher の GIoU がゼロ除算を起こして `matrix contains invalid numeric entries` で停止するためです。実際の本の背表紙は細くてもこの閾値よりはるかに大きく、誤って除去されることはありません。オンライン拡張は train のみに適用され、val、test、推論には適用されません。
 
 人手レビュー済みターゲットの意味を変えたり切り落としたりしないよう、ランダム crop、noise、cutout、mixup は含めていません。範囲外の値や min/max の逆転はプリフライトで拒否されます。
 

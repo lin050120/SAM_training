@@ -863,6 +863,13 @@ def inspect_training_config(
         online_augmentation
     )
     errors.extend(augmentation_errors)
+    if resolved_augmentation.repeat_factor > 20:
+        warnings.append(
+            f"online augmentation repeat_factor is very large "
+            f"({resolved_augmentation.repeat_factor}); each epoch replays every source "
+            "image that many times, so epoch time and overfitting risk scale with it. "
+            "3-5 is usually enough; large values mostly inflate epoch time."
+        )
     base_config = _resolve_existing_or_absolute(config_path)
     train_script = _resolve_existing_or_absolute(train_script)
     try:

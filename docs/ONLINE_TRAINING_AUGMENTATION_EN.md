@@ -27,7 +27,7 @@ Start with Light for one complete train/validation cycle. Increase the repeat fa
 
 ## Masks and scope
 
-Geometric transforms use the same random parameters for the image and every instance mask. Masks use nearest-neighbor interpolation; bbox and area are recomputed from each transformed mask. Online augmentation applies only to train. Val, test, and inference do not receive these random transforms.
+Geometric transforms use the same random parameters for the image and every instance mask. Masks use nearest-neighbor interpolation; bbox and area are recomputed from each transformed mask. After the recompute, degenerate sliver targets (whose box width or height is under 0.5% of the image side) are dropped, so rotation/translation that shrinks a mask to a 1-2px fragment cannot feed a near-zero-area normalized box into the Hungarian matcher, whose GIoU would otherwise divide by zero and abort with `matrix contains invalid numeric entries`. Real book spines, even thin ones, are far larger than this threshold and are never removed. Online augmentation applies only to train. Val, test, and inference do not receive these random transforms.
 
 This feature deliberately excludes random crop, noise, cutout, and mixup so reviewed target semantics are not changed or cropped away. Preflight rejects out-of-range values and reversed min/max ranges.
 
