@@ -2646,6 +2646,99 @@ class TrainingLossTraceTest(unittest.TestCase):
         self.assertEqual(records[1]["optimizer_step"], 40)
         self.assertAlmostEqual(records[1]["loss"], 30.5)
 
+    @staticmethod
+    def _bare_trace_trainer(tmp: str):
+        import types
+
+        from core.training_loss_trace import LossTracingTrainer
+
+        trainer = object.__new__(LossTracingTrainer)
+        trainer.distributed_rank = 0
+        trainer._nonfinite_dump_count = 0
+        trainer.epoch = 6
+        trainer.steps = {"train": 12345}
+        trainer.logging_conf = types.SimpleNamespace(log_dir=str(tmp))
+        return trainer
+
+    @staticmethod
+    def _fake_model(params):
+        import types
+
+        return types.SimpleNamespace(named_parameters=lambda: iter(params))
+
+    @staticmethod
+    def _fake_datapoint(img_batch):
+        import types
+
+        return types.SimpleNamespace(img_batch=img_batch, find_text_batch=["book spine"])
+
+    def _read_diag(self, tmp: str) -> list[dict]:
+        import glob
+
+        return [
+            json.loads(Path(p).read_text(encoding="utf-8"))
+            for p in sorted(glob.glob(str(Path(tmp) / "nan_diagnostics" / "*.json")))
+        ]
+
+    def test_nan_diag_finite_weights_and_input_points_at_forward(self) -> None:
+        import torch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self._bare_trace_trainer(tmp)
+            model = self._fake_model([("backbone.w", torch.ones(3, 3))])
+            dp = self._fake_datapoint(torch.ones(1, 3, 8, 8))
+            import glob
+
+            trainer._dump_nonfinite_diagnostic(dp, model, float("nan"))
+            diags = self._read_diag(tmp)
+            # A replay snapshot is written alongside (checked inside the tempdir).
+            pt_count = len(glob.glob(str(Path(tmp) / "nan_diagnostics" / "*.pt")))
+        self.assertEqual(len(diags), 1)
+        self.assertTrue(diags[0]["weights_finite"])
+        self.assertTrue(diags[0]["input_img_batch"]["all_finite"])
+        self.assertIn("inside this forward", diags[0]["verdict"])
+        self.assertEqual(pt_count, 1)
+
+    def test_nan_diag_nonfinite_weights_points_at_corruption(self) -> None:
+        import torch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self._bare_trace_trainer(tmp)
+            bad = torch.tensor([1.0, float("nan"), 2.0])
+            model = self._fake_model([("head.bias", bad), ("ok.w", torch.zeros(2))])
+            dp = self._fake_datapoint(torch.ones(1, 3, 8, 8))
+            trainer._dump_nonfinite_diagnostic(dp, model, float("nan"))
+            diags = self._read_diag(tmp)
+        self.assertFalse(diags[0]["weights_finite"])
+        self.assertEqual(diags[0]["num_nonfinite_param_tensors"], 1)
+        self.assertTrue(any("head.bias" in p for p in diags[0]["example_bad_params"]))
+        self.assertIn("corrupted", diags[0]["verdict"])
+
+    def test_nan_diag_nonfinite_input_points_at_data(self) -> None:
+        import torch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self._bare_trace_trainer(tmp)
+            img = torch.ones(1, 3, 4, 4)
+            img[0, 0, 0, 0] = float("inf")
+            model = self._fake_model([("w", torch.ones(2))])
+            trainer._dump_nonfinite_diagnostic(self._fake_datapoint(img), model, float("nan"))
+            diags = self._read_diag(tmp)
+        self.assertTrue(diags[0]["weights_finite"])
+        self.assertFalse(diags[0]["input_img_batch"]["all_finite"])
+        self.assertIn("input image", diags[0]["verdict"])
+
+    def test_nan_diag_is_rate_limited(self) -> None:
+        import torch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = self._bare_trace_trainer(tmp)
+            model = self._fake_model([("w", torch.ones(2))])
+            dp = self._fake_datapoint(torch.ones(1, 3, 4, 4))
+            for _ in range(5):
+                trainer._dump_nonfinite_diagnostic(dp, model, float("nan"))
+            self.assertEqual(len(self._read_diag(tmp)), 3)
+
 
 class TrainingRunHistoryRobustnessTest(unittest.TestCase):
     def test_training_run_missing_summary_shows_placeholder_status(self) -> None:
