@@ -191,27 +191,40 @@ def test_all_nonfinite_params_collected_and_hook_called():
     assert "nonfinite_param_tensors=2" in warn.call_args.args[0]
 
 
-def test_grad_dump_writes_batch_targets_and_rng(tmp_path):
-    from core.training_loss_trace import GRAD_NAN_DIAG_MAX_DUMPS, LossTracingTrainer
+def _grad_diag_shell(tmp_path, accum=2):
+    from core.training_loss_trace import LossTracingTrainer
 
     tr = LossTracingTrainer.__new__(LossTracingTrainer)
     tr.distributed_rank = 0
     tr._grad_nan_dump_count = 0
+    tr._pending_step_datapoints = []
+    tr.gradient_accumulation_steps = accum
     tr.epoch = 7
     tr.steps = {"train": 12345}
     tr.logging_conf = types.SimpleNamespace(log_dir=str(tmp_path))
+    return tr
 
-    dp = types.SimpleNamespace(
+
+def _fake_datapoint():
+    return types.SimpleNamespace(
         img_batch=torch.randn(1, 3, 8, 8),
         raw_images=[torch.randn(3, 16, 16)],
         find_text_batch=["book spine"],
         find_targets=[{"boxes": torch.randn(2, 4), "masks": torch.zeros(2, 8, 8)}],
         find_metadatas=[{"source_id": -1}],
     )
-    batch = [{"book_spine": dp}, {"book_spine": dp}]  # 2 accum micro-batches
+
+
+def test_grad_dump_writes_batch_targets_and_rng(tmp_path):
+    from core.training_loss_trace import GRAD_NAN_DIAG_MAX_DUMPS
+
+    tr = _grad_diag_shell(tmp_path, accum=2)
+    dp = _fake_datapoint()
+    # simulate _step capturing (key, datapoint) for each accum micro-batch
+    tr._pending_step_datapoints = [("book_spine", dp), ("book_spine", dp)]
     nonfinite = [{"name": "backbone.vision_backbone.trunk.pos_embed", "nan": 576, "inf": 0}]
 
-    tr._on_nonfinite_grads_diag(batch, 12345, nonfinite)
+    tr._on_nonfinite_grads_diag(None, 12345, nonfinite)  # base passes emptied batch
 
     dumps = tmp_path / "nan_diagnostics"
     pts = list(dumps.glob("gradnan_*.pt"))
@@ -220,15 +233,45 @@ def test_grad_dump_writes_batch_targets_and_rng(tmp_path):
 
     blob = torch.load(pts[0], weights_only=False)
     assert len(blob["batch"]) == 2  # all accum micro-batches saved
+    assert blob["batch"][0]["dataset_key"] == "book_spine"
+    assert blob["batch"][0]["img_batch"] is not None  # <-- the popitem bug regressor
     assert blob["batch"][0]["find_text_batch"] == ["book spine"]
     assert blob["batch"][0]["find_targets"][0]["boxes"].device.type == "cpu"
     assert blob["nonfinite_grad_params"] == nonfinite
     assert "torch" in blob["rng"] and "numpy" in blob["rng"]
     meta = json.loads(jsons[0].read_text())
     assert meta["num_micro_batches"] == 2
+    assert meta["img_batch_captured"] is True
     assert meta["num_nonfinite_grad_tensors"] == 1
+    # buffer cleared after use (no leak across steps)
+    assert tr._pending_step_datapoints == []
 
     # rate-limited: no more than GRAD_NAN_DIAG_MAX_DUMPS files
     for _ in range(GRAD_NAN_DIAG_MAX_DUMPS + 2):
-        tr._on_nonfinite_grads_diag(batch, 12345, nonfinite)
+        tr._pending_step_datapoints = [("book_spine", dp)]
+        tr._on_nonfinite_grads_diag(None, 12345, nonfinite)
     assert len(list(dumps.glob("gradnan_*.pt"))) == GRAD_NAN_DIAG_MAX_DUMPS
+
+
+def test_captured_datapoints_survive_popitem_consumption(tmp_path):
+    """Regression for the v6 bug: the base _step does `batch.popitem()`, so the
+    dict handed to the guard hook is empty. The datapoint must be captured BEFORE
+    that, so the dump is not all-None."""
+    tr = _grad_diag_shell(tmp_path, accum=2)
+    dp = _fake_datapoint()
+
+    # Simulate the two accum micro-batches as base _step sees them, capturing the
+    # ref (as _step does) and THEN emptying the dict (as popitem does).
+    for _ in range(tr.gradient_accumulation_steps):
+        micro = {"book_spine": dp}
+        key, datapoint = next(iter(micro.items()))  # captured before popitem
+        if len(tr._pending_step_datapoints) >= tr.gradient_accumulation_steps:
+            tr._pending_step_datapoints = []
+        tr._pending_step_datapoints.append((key, datapoint))
+        micro.popitem()  # base _step consumes it -> dict now empty
+        assert micro == {}
+
+    tr._on_nonfinite_grads_diag([{}, {}], 999, [])  # emptied batch handed in
+    blob = torch.load(next((tmp_path / "nan_diagnostics").glob("gradnan_*.pt")), weights_only=False)
+    assert len(blob["batch"]) == 2
+    assert all(mb["img_batch"] is not None for mb in blob["batch"])

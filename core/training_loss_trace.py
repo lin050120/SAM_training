@@ -94,6 +94,10 @@ class LossTracingTrainer(Trainer):
         )
         self._nonfinite_dump_count = 0
         self._grad_nan_dump_count = 0
+        # (key, datapoint) refs captured BEFORE base _step's popitem consumes the
+        # batch, accumulated across the accum micro-batches of one optimizer step,
+        # so the grad-time guard hook can snapshot the actual failing batch.
+        self._pending_step_datapoints: list[tuple[Any, Any]] = []
 
     def _record_training_microbatch(self, loss: float, batch_size: int) -> None:
         if self.distributed_rank != 0:
@@ -250,22 +254,29 @@ class LossTracingTrainer(Trainer):
         still finite -- so the loss-triggered dump never fires. Snapshot every
         augmented micro-batch (img + raw image + targets/masks + metadata/source
         id) plus RNG and the full non-finite-param list, so the culprit sample /
-        augmentation / op can be found offline. Fully guarded upstream."""
+        augmentation / op can be found offline. Fully guarded upstream.
+
+        NOTE: the base guard passes `batch`, but by now base _step's popitem has
+        emptied those dicts, so we use the (key, datapoint) refs captured in
+        _step BEFORE popitem (self._pending_step_datapoints)."""
         if getattr(self, "distributed_rank", 0) != 0:
+            self._pending_step_datapoints = []
             return
         if self._grad_nan_dump_count >= GRAD_NAN_DIAG_MAX_DUMPS:
+            self._pending_step_datapoints = []
             return
         self._grad_nan_dump_count += 1
         index = self._grad_nan_dump_count
         try:
-            # batch is the list of accum micro-batches (or a single one); the NaN
-            # grad is their SUM, so save them all -- the culprit is among them.
-            micro = batch if isinstance(batch, list) else [batch]
+            # The captured datapoints are this optimizer step's accum micro-
+            # batches; the NaN grad is their SUM, so save them all -- the culprit
+            # is among them (re-run each offline to find which one + BF16-vs-FP32).
+            captured = list(self._pending_step_datapoints)
             saved: list[dict[str, Any]] = []
-            for mb in micro:
-                dp = next(iter(mb.values())) if isinstance(mb, dict) and mb else mb
+            for key, dp in captured:
                 saved.append(
                     {
+                        "dataset_key": key,
                         "img_batch": self._to_cpu(getattr(dp, "img_batch", None)),
                         "raw_images": self._to_cpu(getattr(dp, "raw_images", None)),
                         "find_text_batch": getattr(dp, "find_text_batch", None),
@@ -291,7 +302,10 @@ class LossTracingTrainer(Trainer):
                 "kind": "grad_nan",
                 "epoch": epoch,
                 "steps_train": int(step),
-                "num_micro_batches": len(micro),
+                "num_micro_batches": len(captured),
+                "img_batch_captured": bool(
+                    saved and any(s["img_batch"] is not None for s in saved)
+                ),
                 "num_nonfinite_grad_tensors": len(nonfinite_params),
                 "nonfinite_grad_params": nonfinite_params[:500],
                 "note": (
@@ -329,13 +343,24 @@ class LossTracingTrainer(Trainer):
                 file=sys.stderr,
                 flush=True,
             )
+        finally:
+            # Release the captured micro-batch refs for this optimizer step.
+            self._pending_step_datapoints = []
 
     def _step(self, batch: Any, model: Any, phase: str):
-        # The base _step pops the datapoint out of this dict, so grab a reference
-        # first in case we need it for a non-finite diagnostic below.
+        # The base _step pops (key, datapoint) out of this dict, so grab a
+        # reference first -- both for the loss diagnostic below and, accumulated
+        # across the accum micro-batches, for the grad-guard batch snapshot.
+        captured_key = None
         captured_datapoint = None
         if phase == Phase.TRAIN and isinstance(batch, dict) and batch:
-            captured_datapoint = next(iter(batch.values()))
+            captured_key, captured_datapoint = next(iter(batch.items()))
+            # A finished optimizer step leaves a full buffer that no bad-grad hook
+            # cleared (the step was good): reset before the new step accumulates,
+            # so we hold at most one optimizer step's micro-batches (no leak).
+            if len(self._pending_step_datapoints) >= self.gradient_accumulation_steps:
+                self._pending_step_datapoints = []
+            self._pending_step_datapoints.append((captured_key, captured_datapoint))
         result = super()._step(batch, model, phase)
         if phase == Phase.TRAIN:
             loss_dict, batch_size, _extra_losses = result
