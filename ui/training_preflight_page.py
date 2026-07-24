@@ -28,7 +28,7 @@ from core.online_augmentation import (
     ONLINE_AUGMENTATION_LIGHT,
     OnlineAugmentationConfig,
 )
-from core.sam301_patch import verify_patched_for_training
+from core.sam301_patch import verify_all_patches_for_training
 from core.sam301_patch import collect_training_provenance
 from core.training_runner import (
     DEFAULT_DISTRIBUTED_MASTER_ADDR,
@@ -391,7 +391,7 @@ def _consume_preflight_for_launch(
     # SAM301 patch guard (launcher side): re-check the trainer hash right before the
     # token would be consumed, so a file replaced after preflight is caught here and
     # the token is NOT burned.
-    patch_guard_error = verify_patched_for_training()
+    patch_guard_error = verify_all_patches_for_training()
     if patch_guard_error:
         reasons.append(f"sam301 patch guard: {patch_guard_error}")
     if reasons:
@@ -590,7 +590,7 @@ def resume_training(
             cuda_available=cuda.available,
             cuda_device_count=cuda.device_count,
         )
-        patch_guard_error = verify_patched_for_training()
+        patch_guard_error = verify_all_patches_for_training()
         if patch_guard_error:
             reasons.append(f"sam301 patch guard: {patch_guard_error}")
         if reasons:

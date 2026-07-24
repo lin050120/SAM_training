@@ -1952,7 +1952,7 @@ class ResumeTrainingHandlerTest(unittest.TestCase):
             mock.patch.object(tpp, "training_process_manager", self.manager),
             mock.patch.object(tpm, "training_process_manager", self.manager),
             mock.patch.object(tpp, "detect_cuda", return_value=SimpleNamespace(available=True, device_count=1)),
-            mock.patch.object(tpp, "verify_patched_for_training", return_value=None),
+            mock.patch.object(tpp, "verify_all_patches_for_training", return_value=None),
             mock.patch.object(tpp, "allocate_distributed_port", return_value=43001),
             mock.patch.object(
                 tpp,

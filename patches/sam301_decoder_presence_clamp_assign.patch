@@ -1,0 +1,23 @@
+--- decoder.py.orig
++++ /home/book/sam301/sam3/model/decoder.py
+@@ -585,11 +585,16 @@
+                     self.presence_token_out_norm(presence_out)
+                 ).squeeze(-1)
+ 
+-                # clamp to mitigate numerical issues
++                # clamp to mitigate numerical issues. NOTE: Tensor.clamp is NOT
++                # in-place and returns a new tensor -- the result must be assigned
++                # back or the clamp is a silent no-op (presence logits then saturate
++                # and trip the gamma=0 focal-loss backward NaN; SAM3 PR #576).
+                 if self.clamp_presence_logits:
+-                    intermediate_layer_presence_logits.clamp(
+-                        min=-self.clamp_presence_logit_max_val,
+-                        max=self.clamp_presence_logit_max_val,
++                    intermediate_layer_presence_logits = (
++                        intermediate_layer_presence_logits.clamp(
++                            min=-self.clamp_presence_logit_max_val,
++                            max=self.clamp_presence_logit_max_val,
++                        )
+                     )
+ 
+                 intermediate_presence_logits.append(intermediate_layer_presence_logits)

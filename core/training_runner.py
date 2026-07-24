@@ -40,7 +40,7 @@ from core.online_augmentation import (
     build_online_augmentation_transforms,
     resolve_online_augmentation_config,
 )
-from core.sam301_patch import collect_training_provenance, verify_patched_for_training
+from core.sam301_patch import collect_training_provenance, verify_all_patches_for_training
 
 TRAINING_OUTPUT_ROOT_ERROR = "Training output must remain under"
 DEFAULT_DISTRIBUTED_MASTER_ADDR = "localhost"
@@ -1161,7 +1161,7 @@ def inspect_training_config(
         # token) must never be prepared while the trainer is not exactly the
         # expected patched hash — fail closed before anything is written.
         if prepare_runtime:
-            patch_guard_error = verify_patched_for_training()
+            patch_guard_error = verify_all_patches_for_training()
             if patch_guard_error:
                 errors.append(f"sam301 patch guard: {patch_guard_error}")
 

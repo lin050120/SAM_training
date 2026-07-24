@@ -107,18 +107,12 @@ def _resolve_guard_target(project_root: Path, manifest: dict) -> tuple[Path, Pat
     return expected_root, target
 
 
-def _verify_sam301_patch_or_die(project_root: Path | None = None) -> None:
-    """Last-line fail-closed guard inside the actual training subprocess.
-
-    Stdlib-only re-implementation of the manifest hash check (this script must not
-    depend on book01 imports): the trainer file must match the manifest's patched
-    SHA256 exactly, otherwise training is refused.
-    """
+def _verify_one_sam301_manifest_or_die(root: Path, manifest_path: Path) -> None:
+    """Stdlib-only fail-closed check for a single manifest: patch-file sha256 and
+    the target file must match the manifest's patched sha256 exactly."""
     import hashlib
     import json
 
-    root = (project_root or Path(__file__).resolve().parent.parent).expanduser().resolve(strict=False)
-    manifest_path = root / "config" / "sam301_patch_manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         _expected_root, target = _resolve_guard_target(root, manifest)
@@ -140,6 +134,28 @@ def _verify_sam301_patch_or_die(project_root: Path | None = None) -> None:
             f"sam301 patch guard: {target} sha256={actual} != expected patched {expected}; "
             "refusing to train. Run: conda run -n sam301 python scripts/manage_sam301_patch.py verify"
         )
+
+
+def _verify_sam301_patch_or_die(project_root: Path | None = None) -> None:
+    """Last-line fail-closed guard inside the actual training subprocess.
+
+    Stdlib-only re-implementation of the manifest hash check (this script must not
+    depend on book01 imports): EVERY enforced patch -- the legacy trainer manifest
+    plus every per-file manifest under config/sam301_patches/ -- must leave its
+    target at the manifest's patched SHA256, otherwise training is refused.
+    """
+    root = (project_root or Path(__file__).resolve().parent.parent).expanduser().resolve(strict=False)
+    manifest_paths = []
+    legacy = root / "config" / "sam301_patch_manifest.json"
+    if legacy.is_file():
+        manifest_paths.append(legacy)
+    manifest_paths.extend(sorted((root / "config" / "sam301_patches").glob("*.json")))
+    if not manifest_paths:
+        raise SystemExit(
+            "sam301 patch guard: no manifests found under config/; refusing to train"
+        )
+    for manifest_path in manifest_paths:
+        _verify_one_sam301_manifest_or_die(root, manifest_path)
 
 
 def run_training(

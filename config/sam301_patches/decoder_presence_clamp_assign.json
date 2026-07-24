@@ -1,0 +1,12 @@
+{
+  "patch_id": "sam301-decoder-presence-clamp-assign",
+  "version": 1,
+  "purpose": "The decoder's presence-logit clamp is a silent no-op: `intermediate_layer_presence_logits.clamp(min=..., max=...)` is NOT in-place and its return value was discarded, so with clamp_presence_logits=True (the default) and clamp_presence_logit_max_val=10.0 the logits were never actually clamped and could saturate to +/-18, tripping the gamma=0 Triton focal-loss backward NaN. This patch assigns the clamp result back so it takes effect (a working +/-10 clamp keeps 1 - p_t ~ 4.5e-5, above the underflow that produces Inf in the Triton kernel). Defense-in-depth alongside the loss-fns gamma==0 fallback fix; aligns with SAM3 PR #576. Target: sam3/model/decoder.py TransformerDecoder.forward presence-logit clamp.",
+  "target_file": "sam3/model/decoder.py",
+  "patch_file": "patches/sam301_decoder_presence_clamp_assign.patch",
+  "patch_file_sha256": "b844d165f137de9bed77320fefd9c6f952b5af99240c696fe8750c31583a7e3b",
+  "original_sha256": "2bc0ad4ab894f09306e6225c116119f9a696e5b5b3dfa5aafde35081ad68d1e0",
+  "patched_sha256": "e623b1e580ae7ca785b220bc111724de85bb656628391e5fcc8abaab5a949d65",
+  "hash_provenance": "v1 (2026-07-24): original_sha256 = live pre-patch file; patched_sha256 and patch_file_sha256 built by assigning the clamp result back (`x = x.clamp(...)`). The patch forward-applies onto the original to exactly patched_sha256 and reverse-applies back to original_sha256 (round-trips verified). PENDING independent Codex reproduction.",
+  "applied_in_commit_record": "pending commit on branch fix/bf16-scaler-grad-guard-20260724; /home/book/sam301 is not a git repository"
+}

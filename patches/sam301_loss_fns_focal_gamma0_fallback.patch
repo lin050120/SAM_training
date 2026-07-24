@@ -1,0 +1,17 @@
+--- loss_fns.py.orig
++++ /home/book/sam301/sam3/train/loss/loss_fns.py
+@@ -149,7 +149,13 @@
+     """
+     if not (0 <= alpha <= 1) and triton:
+         raise RuntimeError(f"Alpha should be in [0,1], got {alpha}")
+-    if triton:
++    # gamma == 0 makes the modulating factor (1 - p_t) ** gamma identically 1, but
++    # the Triton backward computes (1 - p_t) ** (gamma - 1) = (1 - p_t) ** -1, which
++    # is Inf once a confident logit saturates p_t -> 1; the subsequent 0 * Inf = NaN
++    # gives a FINITE forward/loss but a NaN gradient that spreads through the whole
++    # net (SAM3 issue #575, PRs #484/#576). The PyTorch path is numerically finite
++    # there (0 * finite = 0), so route gamma == 0 to it. gamma != 0 is unaffected.
++    if triton and gamma != 0:
+         if reduce and not loss_on_multimask:
+             loss = triton_sigmoid_focal_loss_reduce(inputs, targets, alpha, gamma)
+             return loss / (num_boxes * inputs.shape[1])

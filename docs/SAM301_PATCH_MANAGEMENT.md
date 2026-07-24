@@ -4,6 +4,15 @@
 
 生成时间: 2026-07-03
 
+> **多文件补丁扩展（2026-07-24）：** 本系统已从"单文件（trainer.py）"扩展为**多 manifest**。除遗留的
+> `config/sam301_patch_manifest.json`（trainer.py）外，每个额外的 sam301 目标文件在
+> `config/sam301_patches/*.json` 各有一个 manifest（当前：`loss_fns_focal_gamma0_fallback.json`、
+> `decoder_presence_clamp_assign.json`）。三层 fail-closed 预检现在校验**全部** manifest
+> （`core/sam301_patch.py::verify_all_patches_for_training()` 遍历 `discover_manifest_paths()`）。
+> `manage_sam301_patch.py` 不带 `--manifest` 时对**所有**补丁执行 status/verify/apply/revert
+> （apply/revert 会跳过已处于目标状态的补丁）；带 `--manifest <路径>` 仍是单文件操作（测试用）。
+> 每个 manifest 的字段/命令/原子替换/哈希三态语义与下文完全一致，只是现在有多个。
+
 ## 1. 为什么需要补丁
 
 `/home/book/sam301/sam3/train/trainer.py` 的 `_run_step` 在 `gradient_accumulation_steps > 1` 时对每个 micro-batch 直接 `backward(loss)`，梯度是**求和**而非平均——不变学习率下不等价于真实大 batch。补丁（唯一改动点）：

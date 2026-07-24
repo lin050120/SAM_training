@@ -38,10 +38,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.sam301_patch import (  # noqa: E402
     STATE_PATCHED,
     STATE_UNPATCHED,
+    discover_manifest_paths,
     load_manifest,
     patch_status,
     resolve_patch_file,
     sha256_of_file,
+    verify_all_patches_for_training,
     verify_patched_for_training,
 )
 
@@ -52,6 +54,13 @@ def _emit(payload: dict, as_json: bool) -> None:
     else:
         for key, value in payload.items():
             print(f"{key}: {value}")
+
+
+def _target_manifests(args) -> list:
+    """A single explicit --manifest, else every enforced manifest."""
+    if args.manifest is not None:
+        return [args.manifest]
+    return discover_manifest_paths()
 
 
 def _check_patch_file(manifest: dict, manifest_path: Path | None) -> tuple[Path, str | None]:
@@ -114,12 +123,36 @@ def _apply_patch_atomically(target: Path, patch_file: Path, reverse: bool, expec
 
 
 def cmd_status(args) -> int:
+    if args.manifest is None:
+        results = [patch_status(m).to_dict() for m in discover_manifest_paths()]
+        if args.json:
+            _emit({"patches": results}, True)
+        else:
+            for r in results:
+                _emit(r, False)
+                print("---")
+        return 0
     status = patch_status(args.manifest)
     _emit(status.to_dict(), args.json)
     return 0
 
 
 def cmd_verify(args) -> int:
+    if args.manifest is None:
+        error = verify_all_patches_for_training()
+        results = []
+        for m in discover_manifest_paths():
+            e = verify_patched_for_training(m)
+            try:
+                sd = patch_status(m).to_dict()
+            except Exception:
+                sd = {}
+            results.append({"ok": e is None, **sd, **({"error": e} if e else {})})
+        payload = {"ok": error is None, "patches": results}
+        if error:
+            payload["error"] = error
+        _emit(payload, args.json)
+        return 0 if error is None else 1
     error = verify_patched_for_training(args.manifest)
     status_dict = None
     try:
@@ -133,13 +166,42 @@ def cmd_verify(args) -> int:
     return 0 if error is None else 1
 
 
-def _apply_or_revert(args, revert: bool) -> int:
+def _apply_or_revert(args, revert: bool, emit: bool = True) -> int:
     action = "revert" if revert else "apply"
+
+    def _o(payload: dict) -> None:
+        if emit:
+            _emit(payload, args.json)
+
+    # No explicit manifest: apply/revert EVERY enforced patch, tolerating those
+    # already in the desired state (so a partial set converges cleanly).
+    if args.manifest is None:
+        manifests = discover_manifest_paths()
+        results = []
+        overall_ok = True
+        want = STATE_PATCHED if revert else STATE_UNPATCHED
+        done = STATE_UNPATCHED if revert else STATE_PATCHED
+        for m in manifests:
+            single = argparse.Namespace(manifest=m, json=args.json)
+            state = patch_status(m).state
+            if state == done:
+                results.append({"manifest": m.name, "ok": True, "skipped": f"already {done}"})
+                continue
+            if state != want:
+                overall_ok = False
+                results.append({"manifest": m.name, "ok": False, "state": state})
+                continue
+            rc = _apply_or_revert(single, revert, emit=False)
+            ok = rc == 0 and patch_status(m).state == done
+            overall_ok = overall_ok and ok
+            results.append({"manifest": m.name, "ok": ok, "state": patch_status(m).state})
+        _emit({"ok": overall_ok, "action": action, "patches": results}, args.json)
+        return 0 if overall_ok else 1
     manifest = load_manifest(args.manifest)
     status = patch_status(args.manifest)
     patch_file, patch_error = _check_patch_file(manifest, args.manifest)
     if patch_error:
-        _emit({"ok": False, "action": action, "error": patch_error}, args.json)
+        _o({"ok": False, "action": action, "error": patch_error})
         return 1
 
     required_state = STATE_PATCHED if revert else STATE_UNPATCHED
@@ -151,14 +213,13 @@ def _apply_or_revert(args, revert: bool) -> int:
             hint = " — already PATCHED, refusing to re-apply"
         elif status.state == STATE_UNPATCHED and revert:
             hint = " — already at the original hash, nothing to revert"
-        _emit(
+        _o(
             {
                 "ok": False,
                 "action": action,
                 "error": f"{action} requires state {required_state}, current state is {status.state}{hint}",
                 **status.to_dict(),
-            },
-            args.json,
+            }
         )
         return 1
 
@@ -167,17 +228,16 @@ def _apply_or_revert(args, revert: bool) -> int:
 
     dry = _run_patch_tool(target, patch_file, reverse=revert, dry_run=True)
     if dry.returncode != 0:
-        _emit({"ok": False, "action": action, "error": f"dry-run failed: {dry.stdout.strip()}"}, args.json)
+        _o({"ok": False, "action": action, "error": f"dry-run failed: {dry.stdout.strip()}"})
         return 1
 
     ok, error = _apply_patch_atomically(target, patch_file, reverse=revert, expected_after=expected_after)
     if not ok:
-        _emit({"ok": False, "action": action, "error": error}, args.json)
+        _o({"ok": False, "action": action, "error": error})
         return 1
 
-    _emit(
-        {"ok": True, "action": action, "state": patch_status(args.manifest).state, "sha256": expected_after},
-        args.json,
+    _o(
+        {"ok": True, "action": action, "state": patch_status(args.manifest).state, "sha256": expected_after}
     )
     return 0
 

@@ -12,6 +12,10 @@ from typing import Any
 from core.config import BOOK_ROOT, SAM301_ROOT
 
 DEFAULT_MANIFEST_PATH = BOOK_ROOT / "config" / "sam301_patch_manifest.json"
+# Additional per-file patch manifests live here, one JSON per sam301 target file.
+# The single legacy manifest above (trainer.py) plus every file in this directory
+# together form the full set the training gate enforces.
+MANIFESTS_DIR = BOOK_ROOT / "config" / "sam301_patches"
 
 STATE_PATCHED = "PATCHED"
 STATE_UNPATCHED = "UNPATCHED"
@@ -43,6 +47,20 @@ def _resolved_inside(path: Path, root: Path) -> bool:
 
 def _resolve_manifest_path(manifest_path: Path | None = None) -> Path:
     return (Path(manifest_path) if manifest_path else DEFAULT_MANIFEST_PATH).expanduser().resolve(strict=False)
+
+
+def discover_manifest_paths() -> list[Path]:
+    """All sam301 patch manifests the training gate must enforce: the legacy
+    trainer manifest (if present) plus every JSON in MANIFESTS_DIR, de-duplicated
+    and stably ordered."""
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in [DEFAULT_MANIFEST_PATH, *sorted(MANIFESTS_DIR.glob("*.json"))]:
+        resolved = candidate.expanduser().resolve(strict=False)
+        if candidate.is_file() and resolved not in seen:
+            seen.add(resolved)
+            paths.append(candidate)
+    return paths
 
 
 def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:
@@ -79,8 +97,9 @@ def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:
 def resolve_patch_file(manifest: dict[str, Any], manifest_path: Path | None = None) -> Path:
     patch_file = Path(manifest["patch_file"])
     if not patch_file.is_absolute():
-        base = _resolve_manifest_path(manifest_path).parent.parent if manifest_path else BOOK_ROOT
-        patch_file = base / patch_file
+        # patch_file is documented relative to the book01 root (e.g. "patches/x.patch"),
+        # regardless of how deep the manifest itself is nested under config/.
+        patch_file = BOOK_ROOT / patch_file
     resolved = patch_file.expanduser().resolve(strict=False)
     patch_root = Path(manifest.get("expected_patch_root") or DEFAULT_PATCH_ROOT).expanduser().resolve(strict=False)
     if not _resolved_inside(resolved, patch_root):
@@ -155,6 +174,24 @@ def collect_training_provenance(
     target = Path(manifest["target_file"]).expanduser().resolve(strict=False)
     status = patch_status(manifest_file)
     status_error = verify_patched_for_training(manifest_file)
+    # Summarise every enforced patch (trainer + per-file), and gate on ALL of them.
+    all_patches: list[dict[str, Any]] = []
+    for mp in discover_manifest_paths():
+        try:
+            st = patch_status(mp)
+            all_patches.append(
+                {
+                    "manifest": mp.name,
+                    "patch_id": st.patch_id,
+                    "target_file": st.target_file,
+                    "state": st.state,
+                    "actual_sha256": st.actual_sha256,
+                    "expected_patched_sha256": st.patched_sha256,
+                }
+            )
+        except Exception as exc:
+            all_patches.append({"manifest": mp.name, "error": repr(exc)})
+    all_patches_error = verify_all_patches_for_training()
     git_status = _git_output(["status", "--short"])
     runtime_path = Path(runtime_config_path).expanduser().resolve(strict=False) if runtime_config_path else None
     return {
@@ -173,6 +210,9 @@ def collect_training_provenance(
         "trainer_patch_state": status.state,
         "patch_guard_ok": status_error is None,
         "patch_guard_error": status_error,
+        "all_sam301_patches": all_patches,
+        "all_patches_guard_ok": all_patches_error is None,
+        "all_patches_guard_error": all_patches_error,
         "sam301_root": str(Path(manifest["expected_sam3_root"]).expanduser().resolve(strict=False)),
         "sam3_import_path": sam3_import_path,
         "python_executable": python_executable,
@@ -217,3 +257,21 @@ def verify_patched_for_training(manifest_path: Path | None = None) -> str | None
         f"trainer patch '{status.patch_id}' is {status.state} "
         f"(actual sha256={status.actual_sha256}, expected patched={status.patched_sha256}); {fix_hint}"
     )
+
+
+def verify_all_patches_for_training() -> str | None:
+    """Formal-training gate over EVERY sam301 patch manifest (trainer + the
+    per-file patches in MANIFESTS_DIR). None only when all targets are exactly
+    their patched hash; otherwise the first failing patch's message, fail-closed.
+    """
+    manifests = discover_manifest_paths()
+    if not manifests:
+        return (
+            "no sam301 patch manifests found; refusing to train. "
+            f"Expected {DEFAULT_MANIFEST_PATH} or {MANIFESTS_DIR}/*.json"
+        )
+    for manifest_path in manifests:
+        error = verify_patched_for_training(manifest_path)
+        if error is not None:
+            return f"[{manifest_path.name}] {error}"
+    return None

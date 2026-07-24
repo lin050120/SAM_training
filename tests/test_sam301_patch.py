@@ -403,7 +403,7 @@ class LaunchGateIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=DEFAULT_TRAINING_RUN_ROOT) as tmp:
             with mock.patch.object(
                 training_runner,
-                "verify_patched_for_training",
+                "verify_all_patches_for_training",
                 return_value="trainer patch 'x' is UNPATCHED (test)",
             ):
                 preflight = training_runner.inspect_training_config(
@@ -457,7 +457,7 @@ class LaunchGateIntegrationTest(unittest.TestCase):
             tpm.training_process_manager,
             tpp.detect_cuda,
             tpm.validate_training_run_path,
-            tpp.verify_patched_for_training,
+            tpp.verify_all_patches_for_training,
             tpp.verify_sam3_import_for_training,
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -490,7 +490,7 @@ class LaunchGateIntegrationTest(unittest.TestCase):
                 tpm.training_process_manager = manager
                 tpp.detect_cuda = lambda: SimpleNamespace(available=True, device_count=1)
                 tpm.validate_training_run_path = lambda _p: None
-                tpp.verify_patched_for_training = lambda: "trainer patch 'x' is UNKNOWN (test)"
+                tpp.verify_all_patches_for_training = lambda: "trainer patch 'x' is UNKNOWN (test)"
                 tpp._consumed_preflight_tokens.clear()
                 with mock.patch.object(manager, "start", wraps=manager.start) as start_mock:
                     outputs = list(tpp.start_training(state, True))
@@ -506,7 +506,7 @@ class LaunchGateIntegrationTest(unittest.TestCase):
                     tpm.training_process_manager,
                     tpp.detect_cuda,
                     tpm.validate_training_run_path,
-                    tpp.verify_patched_for_training,
+                    tpp.verify_all_patches_for_training,
                     tpp.verify_sam3_import_for_training,
                 ) = originals
                 tpp._consumed_preflight_tokens.clear()

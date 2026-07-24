@@ -1,0 +1,12 @@
+{
+  "patch_id": "sam301-loss-fns-focal-gamma0-fallback",
+  "version": 1,
+  "purpose": "SAM3 Triton sigmoid focal loss has a backward NaN bug when gamma==0 (as used by the presence focal loss, presence_gamma default 0.0). The Triton backward computes (1 - p_t) ** (gamma - 1) = (1 - p_t) ** -1, which is Inf once a confident presence logit saturates p_t -> 1; the subsequent 0 * Inf = NaN yields a FINITE forward/loss but a NaN gradient that back-propagates through the decoder, encoder and both backbones (reproduced on this box: gamma=0, logits +/-18 -> loss finite, grad NaN). This patch routes gamma == 0 to the numerically-finite PyTorch focal-loss path (the modulating factor is identically 1 there, and 0 * finite = 0); gamma != 0 keeps the Triton path unchanged. Forward loss value is identical (verified). This is the ORIGINAL source of the bad gradients that the bf16-GradScaler and GRAD-GUARD patches only contained/amplified downstream. Aligns with SAM3 issue #575 / PR #484. Target: sam3/train/loss/loss_fns.py sigmoid_focal_loss().",
+  "target_file": "sam3/train/loss/loss_fns.py",
+  "patch_file": "patches/sam301_loss_fns_focal_gamma0_fallback.patch",
+  "patch_file_sha256": "7bac8fd4eb993b77fb2ef99e8b8b69cc2161207593efef3600bacb015ef04670",
+  "original_sha256": "72cfbc8750be577d3bcb11279e6c9d62f83db89dd446c08e1339e8e4a5944ee0",
+  "patched_sha256": "460c9aceb7ca1a6a5fd618867b390f22c8e8d1ef13fc96f3804f2e22d539ab5a",
+  "hash_provenance": "v1 (2026-07-24): original_sha256 = live pre-patch file; patched_sha256 and patch_file_sha256 built by extending `if triton:` -> `if triton and gamma != 0:`. The combined patch forward-applies onto the original to exactly patched_sha256 and reverse-applies back to original_sha256 (round-trips verified). Root cause reproduced on torch 2.10.0+cu128 (triton_sigmoid_focal_loss_reduce, gamma=0, logits +/-18 -> NaN grad; PyTorch fallback -> finite grad). PENDING independent Codex reproduction.",
+  "applied_in_commit_record": "pending commit on branch fix/bf16-scaler-grad-guard-20260724; /home/book/sam301 is not a git repository"
+}
