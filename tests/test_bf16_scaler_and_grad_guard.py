@@ -9,6 +9,8 @@ These cover behavior the grad-accum numerics test does NOT:
   * the stop policy fails closed on consecutive skips and on window ratio.
 """
 
+import json
+import types
 from collections import deque
 from unittest import mock
 
@@ -160,3 +162,73 @@ def test_guard_skip_preserves_weights_end_to_end():
 
     assert bool(torch.isfinite(m.weight).all())
     assert bool((m.weight.detach() == w0).all())  # unchanged: step was skipped
+
+
+def test_all_nonfinite_params_collected_and_hook_called():
+    t = _bare_trainer()
+    m = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    for p in m.parameters():
+        p.grad = torch.ones_like(p)
+    m[0].weight.grad[0, 0] = float("nan")  # layer 0
+    m[1].bias.grad[0] = float("inf")  # layer 1
+    t.model = m
+
+    captured = {}
+
+    def hook(batch, step, nonfinite_params):
+        captured["batch"] = batch
+        captured["params"] = nonfinite_params
+
+    t._on_nonfinite_grads_diag = hook  # override the no-op base hook
+    sentinel_batch = [{"book_spine": object()}]
+    with mock.patch("sam3.train.trainer.logging.warning") as warn:
+        t._handle_nonfinite_grads("train", sentinel_batch)
+
+    # the failing batch is handed to the diagnostic hook, with the FULL list
+    assert captured["batch"] is sentinel_batch
+    names = {p["name"] for p in captured["params"]}
+    assert names == {"0.weight", "1.bias"}  # both, not just the first
+    assert "nonfinite_param_tensors=2" in warn.call_args.args[0]
+
+
+def test_grad_dump_writes_batch_targets_and_rng(tmp_path):
+    from core.training_loss_trace import GRAD_NAN_DIAG_MAX_DUMPS, LossTracingTrainer
+
+    tr = LossTracingTrainer.__new__(LossTracingTrainer)
+    tr.distributed_rank = 0
+    tr._grad_nan_dump_count = 0
+    tr.epoch = 7
+    tr.steps = {"train": 12345}
+    tr.logging_conf = types.SimpleNamespace(log_dir=str(tmp_path))
+
+    dp = types.SimpleNamespace(
+        img_batch=torch.randn(1, 3, 8, 8),
+        raw_images=[torch.randn(3, 16, 16)],
+        find_text_batch=["book spine"],
+        find_targets=[{"boxes": torch.randn(2, 4), "masks": torch.zeros(2, 8, 8)}],
+        find_metadatas=[{"source_id": -1}],
+    )
+    batch = [{"book_spine": dp}, {"book_spine": dp}]  # 2 accum micro-batches
+    nonfinite = [{"name": "backbone.vision_backbone.trunk.pos_embed", "nan": 576, "inf": 0}]
+
+    tr._on_nonfinite_grads_diag(batch, 12345, nonfinite)
+
+    dumps = tmp_path / "nan_diagnostics"
+    pts = list(dumps.glob("gradnan_*.pt"))
+    jsons = list(dumps.glob("gradnan_*.json"))
+    assert len(pts) == 1 and len(jsons) == 1
+
+    blob = torch.load(pts[0], weights_only=False)
+    assert len(blob["batch"]) == 2  # all accum micro-batches saved
+    assert blob["batch"][0]["find_text_batch"] == ["book spine"]
+    assert blob["batch"][0]["find_targets"][0]["boxes"].device.type == "cpu"
+    assert blob["nonfinite_grad_params"] == nonfinite
+    assert "torch" in blob["rng"] and "numpy" in blob["rng"]
+    meta = json.loads(jsons[0].read_text())
+    assert meta["num_micro_batches"] == 2
+    assert meta["num_nonfinite_grad_tensors"] == 1
+
+    # rate-limited: no more than GRAD_NAN_DIAG_MAX_DUMPS files
+    for _ in range(GRAD_NAN_DIAG_MAX_DUMPS + 2):
+        tr._on_nonfinite_grads_diag(batch, 12345, nonfinite)
+    assert len(list(dumps.glob("gradnan_*.pt"))) == GRAD_NAN_DIAG_MAX_DUMPS

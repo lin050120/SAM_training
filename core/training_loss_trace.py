@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from sam3.train.loss.sam3_loss import Sam3LossWrapper
 from sam3.train.trainer import Trainer
@@ -17,6 +19,13 @@ NAN_DIAG_DIRNAME = "nan_diagnostics"
 # Only dump for the first few non-finite steps: training stops right after, and a
 # handful is plenty to diagnose while keeping logs/files small.
 NAN_DIAG_MAX_DUMPS = 3
+
+# Grad-time counterpart: GRAD-GUARD skips a step when the (accumulated) gradient
+# is non-finite while the loss is still finite, so the loss-triggered dump above
+# never fires. This captures the failing augmented batch + targets + RNG so the
+# culprit sample/aug/op can be found offline.
+GRAD_NAN_DIAG_TAG = "[GRAD-NAN-DIAG]"
+GRAD_NAN_DIAG_MAX_DUMPS = 3
 
 
 class ValidationMatchingSam3LossWrapper(Sam3LossWrapper):
@@ -84,6 +93,7 @@ class LossTracingTrainer(Trainer):
             Path(self.logging_conf.log_dir) / TRAIN_LOSS_TRACE_FILENAME
         )
         self._nonfinite_dump_count = 0
+        self._grad_nan_dump_count = 0
 
     def _record_training_microbatch(self, loss: float, batch_size: int) -> None:
         if self.distributed_rank != 0:
@@ -220,6 +230,105 @@ class LossTracingTrainer(Trainer):
             torch.save(snapshot, stem.with_suffix(".pt"))
         except Exception as exc:  # diagnostics must never crash training
             print(f"{NAN_DIAG_TAG} failed to record diagnostic: {exc!r}", file=sys.stderr, flush=True)
+
+    @classmethod
+    def _to_cpu(cls, value: Any) -> Any:
+        """Best-effort move of (possibly nested) tensors to CPU for a picklable
+        snapshot; leaves non-tensor objects as-is."""
+        if isinstance(value, torch.Tensor):
+            return value.detach().to("cpu")
+        if isinstance(value, dict):
+            return {k: cls._to_cpu(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            seq = [cls._to_cpu(v) for v in value]
+            return type(value)(seq) if isinstance(value, tuple) else seq
+        return value
+
+    def _on_nonfinite_grads_diag(self, batch, step, nonfinite_params) -> None:
+        """Grad-time counterpart of _dump_nonfinite_diagnostic. GRAD-GUARD calls
+        this when the (accumulated) gradient is non-finite while the loss was
+        still finite -- so the loss-triggered dump never fires. Snapshot every
+        augmented micro-batch (img + raw image + targets/masks + metadata/source
+        id) plus RNG and the full non-finite-param list, so the culprit sample /
+        augmentation / op can be found offline. Fully guarded upstream."""
+        if getattr(self, "distributed_rank", 0) != 0:
+            return
+        if self._grad_nan_dump_count >= GRAD_NAN_DIAG_MAX_DUMPS:
+            return
+        self._grad_nan_dump_count += 1
+        index = self._grad_nan_dump_count
+        try:
+            # batch is the list of accum micro-batches (or a single one); the NaN
+            # grad is their SUM, so save them all -- the culprit is among them.
+            micro = batch if isinstance(batch, list) else [batch]
+            saved: list[dict[str, Any]] = []
+            for mb in micro:
+                dp = next(iter(mb.values())) if isinstance(mb, dict) and mb else mb
+                saved.append(
+                    {
+                        "img_batch": self._to_cpu(getattr(dp, "img_batch", None)),
+                        "raw_images": self._to_cpu(getattr(dp, "raw_images", None)),
+                        "find_text_batch": getattr(dp, "find_text_batch", None),
+                        "find_targets": self._to_cpu(getattr(dp, "find_targets", None)),
+                        "find_metadatas": self._to_cpu(
+                            getattr(dp, "find_metadatas", None)
+                        ),
+                    }
+                )
+            rng = {
+                "torch": torch.get_rng_state(),
+                "cuda": (
+                    torch.cuda.get_rng_state_all()
+                    if torch.cuda.is_available()
+                    else None
+                ),
+                "numpy": np.random.get_state(),
+                "python": random.getstate(),
+            }
+            epoch = int(getattr(self, "epoch", -1))
+            meta = {
+                "diag_index": index,
+                "kind": "grad_nan",
+                "epoch": epoch,
+                "steps_train": int(step),
+                "num_micro_batches": len(micro),
+                "num_nonfinite_grad_tensors": len(nonfinite_params),
+                "nonfinite_grad_params": nonfinite_params[:500],
+                "note": (
+                    "Loss was finite; only the ACCUMULATED gradient was non-finite. "
+                    "The first param is a HINT only (backprop can spread NaN, e.g. "
+                    "attention mixes all tokens) -- inspect the whole param list and "
+                    "re-run each saved micro-batch to find the true origin. RNG is the "
+                    "main-process state; augmentation ran in dataloader workers, so the "
+                    "saved augmented tensors (not RNG) are the ground truth."
+                ),
+            }
+            print(
+                f"{GRAD_NAN_DIAG_TAG} {json.dumps(meta, ensure_ascii=True)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            dump_dir = Path(self.logging_conf.log_dir) / NAN_DIAG_DIRNAME
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            stem = dump_dir / f"gradnan_{index}_ep{epoch}_step{int(step)}"
+            stem.with_suffix(".json").write_text(
+                json.dumps(meta, indent=2), encoding="utf-8"
+            )
+            torch.save(
+                {
+                    "batch": saved,
+                    "rng": rng,
+                    "nonfinite_grad_params": nonfinite_params,
+                    "meta": meta,
+                },
+                stem.with_suffix(".pt"),
+            )
+        except Exception as exc:  # diagnostics must never crash training
+            print(
+                f"{GRAD_NAN_DIAG_TAG} failed to record grad diagnostic: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _step(self, batch: Any, model: Any, phase: str):
         # The base _step pops the datapoint out of this dict, so grab a reference

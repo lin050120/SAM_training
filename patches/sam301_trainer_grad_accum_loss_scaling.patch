@@ -51,7 +51,7 @@
          self.best_meter_values = checkpoint.get("best_meter_values", {})
  
          if "train_dataset" in checkpoint and self.train_dataset is not None:
-@@ -753,12 +774,77 @@
+@@ -753,12 +774,104 @@
          return out_dict
  
      def _get_trainer_state(self, phase):
@@ -67,40 +67,67 @@
 +            ),
          }
  
-+    def _handle_nonfinite_grads(self, phase):
++    def _on_nonfinite_grads_diag(self, batch, step, nonfinite_params):
++        """Overridable hook fired when GRAD-GUARD skips a non-finite-gradient
++        step. Subclasses may snapshot the failing (augmented) batch, targets,
++        source ids and RNG state for offline root-cause analysis. No-op by
++        default; must never raise (the caller guards it anyway)."""
++        return
++
++    def _handle_nonfinite_grads(self, phase, batch=None):
 +        """Record a skipped (non-finite gradient) optimizer step, log a locating
-+        hint, and fail closed if instability is sustained.
++        hint + the FULL set of non-finite params, snapshot the failing batch via
++        the diagnostic hook, and fail closed if instability is sustained.
 +
 +        Grads are still un-clipped here (clipping would spread NaN across every
-+        param), so the reported parameter is the FIRST non-finite one in
-+        named_parameters() order. Treat it as a locating HINT only, NOT a proven
-+        root-cause layer: backprop itself can propagate NaN downstream, so the
-+        true origin may sit earlier in the graph than the first param scanned."""
++        param), so we record every non-finite gradient tensor. The FIRST one in
++        named_parameters() order is only a locating HINT, NOT a proven root-cause
++        layer: backprop itself can propagate NaN downstream, so the true origin
++        may sit earlier in the graph than the first param scanned."""
 +        self._grad_skip_total += 1
 +        self._grad_skip_consecutive += 1
 +        self._grad_skip_window.append(1)
 +
-+        first_nonfinite = None
++        # Record ALL non-finite gradient tensors, not just the first (Codex
++        # review): the first is only a hint. This full scan runs only on the
++        # rare bad step.
++        nonfinite_params = []
 +        for name, p in self.model.named_parameters():
 +            if p.grad is not None and not torch.isfinite(p.grad).all():
 +                n_nan = int(torch.isnan(p.grad).sum())
 +                n_inf = int(torch.isinf(p.grad).sum())
-+                first_nonfinite = f"{name}(nan={n_nan},inf={n_inf})"
-+                break
++                nonfinite_params.append({"name": name, "nan": n_nan, "inf": n_inf})
++        first_nonfinite = (
++            f"{nonfinite_params[0]['name']}"
++            f"(nan={nonfinite_params[0]['nan']},inf={nonfinite_params[0]['inf']})"
++            if nonfinite_params
++            else None
++        )
 +
 +        window = self._grad_skip_window
 +        ratio = (sum(window) / len(window)) if window else 0.0
 +        step = self.steps[phase]
 +        logging.warning(
 +            f"[GRAD-GUARD] non-finite gradients at train step {step}: skipping "
-+            f"optimizer step. first_nonfinite_param={first_nonfinite} (hint, not "
-+            f"proven origin) consecutive={self._grad_skip_consecutive} "
++            f"optimizer step. nonfinite_param_tensors={len(nonfinite_params)} "
++            f"first_nonfinite_param={first_nonfinite} (hint, not proven origin) "
++            f"consecutive={self._grad_skip_consecutive} "
 +            f"total={self._grad_skip_total} "
 +            f"window_ratio={ratio:.3f} ({sum(window)}/{len(window)})"
 +        )
 +        self.logger.log("GradGuard/skips_total", self._grad_skip_total, step)
 +        self.logger.log("GradGuard/consecutive", self._grad_skip_consecutive, step)
 +        self.logger.log("GradGuard/window_skip_ratio", ratio, step)
++        self.logger.log(
++            "GradGuard/nonfinite_param_tensors", len(nonfinite_params), step
++        )
++
++        # Snapshot the failing batch for offline culprit-finding (fully guarded:
++        # diagnostics must never take training down).
++        try:
++            self._on_nonfinite_grads_diag(batch, step, nonfinite_params)
++        except Exception as exc:
++            logging.warning(f"[GRAD-GUARD] diagnostic hook failed: {exc!r}")
 +
 +        stop_reason = None
 +        if self._grad_skip_consecutive >= GRAD_GUARD_MAX_CONSECUTIVE_SKIPS:
@@ -129,7 +156,7 @@
      def train_epoch(self, train_loader):
          # Init stat meters
          batch_time_meter = AverageMeter("Batch Time", self.device, ":.2f")
-@@ -834,19 +920,59 @@
+@@ -834,19 +947,59 @@
                                  self.steps[phase],
                              )
  
@@ -191,12 +218,12 @@
 +                    # Optimizer step: for fp16 the scaler also guards inf grads
 +                    self.scaler.step(self.optim.optimizer)
 +                else:
-+                    self._handle_nonfinite_grads(phase)
++                    self._handle_nonfinite_grads(phase, batch)
 +                    self.optim.optimizer.zero_grad(set_to_none=True)
                  self.scaler.update()
  
                  # measure elapsed time
-@@ -958,7 +1084,14 @@
+@@ -958,7 +1111,14 @@
                      else:
                          return
  
@@ -212,7 +239,7 @@
                  loss_mts[loss_key].update(loss.item(), batch_size)
                  for extra_loss_key, extra_loss in extra_losses.items():
                      if extra_loss_key not in extra_loss_mts:
-@@ -1087,9 +1220,24 @@
+@@ -1087,9 +1247,24 @@
          if self.meters_conf:
              self.meters = instantiate(self.meters_conf, _convert_="all")
  
