@@ -1,6 +1,202 @@
---- /tmp/claude-1001/-home-book-claude-workspace/2fa662bf-b51d-4db5-91b6-d2688dd0674a/scratchpad/trainer.py.orig	2026-07-03 10:10:24.991726714 +0900
-+++ /home/book/sam301/sam3/train/trainer.py	2026-07-03 10:10:40.103888129 +0900
-@@ -958,7 +958,14 @@
+--- trainer.py.orig
++++ /home/book/sam301/sam3/train/trainer.py
+@@ -10,7 +10,7 @@
+ import math
+ import os
+ import time
+-from collections import OrderedDict
++from collections import deque, OrderedDict
+ from dataclasses import dataclass, field
+ from typing import Any, Dict, List, Mapping, Optional
+ 
+@@ -53,6 +53,14 @@
+ 
+ CORE_LOSS_KEY = "core_loss"
+ 
++# [GRAD-GUARD] stop policy. Occasional non-finite-gradient steps (e.g. a rare
++# degenerate augmented sample) are skipped harmlessly, but sustained instability
++# must fail closed rather than let training "finish" without updating the model.
++GRAD_GUARD_MAX_CONSECUTIVE_SKIPS = 3
++GRAD_GUARD_WINDOW = 200
++GRAD_GUARD_WINDOW_MIN_SAMPLES = 50
++GRAD_GUARD_WINDOW_MAX_SKIP_RATIO = 0.10
++
+ 
+ def unwrap_ddp_if_wrapped(model):
+     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+@@ -365,6 +373,11 @@
+             "steps": self.steps,
+             "time_elapsed": self.time_elapsed_meter.val,
+             "best_meter_values": self.best_meter_values,
++            "grad_guard": {
++                "skips_total": self._grad_skip_total,
++                "consecutive": self._grad_skip_consecutive,
++                "window": list(self._grad_skip_window),
++            },
+         }
+         if self.optim_conf.amp.enabled:
+             checkpoint["scaler"] = self.scaler.state_dict()
+@@ -455,6 +468,14 @@
+         if self.optim_conf.amp.enabled and "scaler" in checkpoint:
+             self.scaler.load_state_dict(checkpoint["scaler"])
+ 
++        grad_guard = checkpoint.get("grad_guard")
++        if grad_guard is not None:
++            self._grad_skip_total = grad_guard.get("skips_total", 0)
++            self._grad_skip_consecutive = grad_guard.get("consecutive", 0)
++            self._grad_skip_window = deque(
++                grad_guard.get("window", []), maxlen=GRAD_GUARD_WINDOW
++            )
++
+         self.best_meter_values = checkpoint.get("best_meter_values", {})
+ 
+         if "train_dataset" in checkpoint and self.train_dataset is not None:
+@@ -753,12 +774,77 @@
+         return out_dict
+ 
+     def _get_trainer_state(self, phase):
++        window = self._grad_skip_window
+         return {
+             "Trainer/where": self.where,
+             "Trainer/epoch": self.epoch,
+             f"Trainer/steps_{phase}": self.steps[phase],
++            "GradGuard/skips_total": self._grad_skip_total,
++            "GradGuard/consecutive": self._grad_skip_consecutive,
++            "GradGuard/window_skip_ratio": (
++                (sum(window) / len(window)) if window else 0.0
++            ),
+         }
+ 
++    def _handle_nonfinite_grads(self, phase):
++        """Record a skipped (non-finite gradient) optimizer step, log a locating
++        hint, and fail closed if instability is sustained.
++
++        Grads are still un-clipped here (clipping would spread NaN across every
++        param), so the reported parameter is the FIRST non-finite one in
++        named_parameters() order. Treat it as a locating HINT only, NOT a proven
++        root-cause layer: backprop itself can propagate NaN downstream, so the
++        true origin may sit earlier in the graph than the first param scanned."""
++        self._grad_skip_total += 1
++        self._grad_skip_consecutive += 1
++        self._grad_skip_window.append(1)
++
++        first_nonfinite = None
++        for name, p in self.model.named_parameters():
++            if p.grad is not None and not torch.isfinite(p.grad).all():
++                n_nan = int(torch.isnan(p.grad).sum())
++                n_inf = int(torch.isinf(p.grad).sum())
++                first_nonfinite = f"{name}(nan={n_nan},inf={n_inf})"
++                break
++
++        window = self._grad_skip_window
++        ratio = (sum(window) / len(window)) if window else 0.0
++        step = self.steps[phase]
++        logging.warning(
++            f"[GRAD-GUARD] non-finite gradients at train step {step}: skipping "
++            f"optimizer step. first_nonfinite_param={first_nonfinite} (hint, not "
++            f"proven origin) consecutive={self._grad_skip_consecutive} "
++            f"total={self._grad_skip_total} "
++            f"window_ratio={ratio:.3f} ({sum(window)}/{len(window)})"
++        )
++        self.logger.log("GradGuard/skips_total", self._grad_skip_total, step)
++        self.logger.log("GradGuard/consecutive", self._grad_skip_consecutive, step)
++        self.logger.log("GradGuard/window_skip_ratio", ratio, step)
++
++        stop_reason = None
++        if self._grad_skip_consecutive >= GRAD_GUARD_MAX_CONSECUTIVE_SKIPS:
++            stop_reason = (
++                f"{self._grad_skip_consecutive} consecutive non-finite gradient "
++                f"steps (limit {GRAD_GUARD_MAX_CONSECUTIVE_SKIPS})"
++            )
++        elif (
++            len(window) >= GRAD_GUARD_WINDOW_MIN_SAMPLES
++            and ratio > GRAD_GUARD_WINDOW_MAX_SKIP_RATIO
++        ):
++            stop_reason = (
++                f"non-finite gradient rate {ratio:.1%} over the last "
++                f"{len(window)} optimizer steps exceeds "
++                f"{GRAD_GUARD_WINDOW_MAX_SKIP_RATIO:.0%}"
++            )
++        if stop_reason is not None:
++            msg = (
++                f"[GRAD-GUARD] stopping training: {stop_reason}. "
++                f"last first_nonfinite_param={first_nonfinite} (hint), "
++                f"total_skips={self._grad_skip_total}"
++            )
++            logging.error(msg)
++            raise FloatingPointError(msg)
++
+     def train_epoch(self, train_loader):
+         # Init stat meters
+         batch_time_meter = AverageMeter("Batch Time", self.device, ":.2f")
+@@ -834,19 +920,59 @@
+                                 self.steps[phase],
+                             )
+ 
+-                # Clipping gradients and detecting diverging gradients
+-                if self.gradient_clipper is not None:
+-                    self.scaler.unscale_(self.optim.optimizer)
+-                    self.gradient_clipper(model=self.model)
++                # Unscale (a no-op under bf16 where the scaler is disabled) then
++                # detect non-finite gradients BEFORE clipping. Clipping scales
++                # every grad by one global coefficient, so a single bad grad
++                # would spread NaN across the whole model and destroy the
++                # first-bad-layer signal; detecting first also skips the clip
++                # work on bad steps. The finiteness check REUSES the total norm
++                # that clipping needs -- one fused pass, no per-parameter Python
++                # scan on the normal path (the per-parameter scan only runs on
++                # the rare bad step, to locate the originating layer).
++                self.scaler.unscale_(self.optim.optimizer)
++                clipper = self.gradient_clipper
++                if clipper is not None and clipper.max_norm is not None:
++                    clip_params = [
++                        p for p in self.model.parameters() if p.grad is not None
++                    ]
++                    total_norm = torch.nn.utils.get_total_norm(
++                        [p.grad for p in clip_params],
++                        norm_type=float(clipper.norm_type),
++                    )
++                    grads_finite = bool(torch.isfinite(total_norm))
++                    if grads_finite:
++                        torch.nn.utils.clip_grads_with_norm_(
++                            clip_params, clipper.max_norm, total_norm
++                        )
++                else:
++                    grads = [
++                        p.grad for p in self.model.parameters() if p.grad is not None
++                    ]
++                    total_norm = (
++                        torch.nn.utils.get_total_norm(grads)
++                        if grads
++                        else torch.zeros((), device=self.device)
++                    )
++                    grads_finite = bool(torch.isfinite(total_norm))
+ 
+                 if self.gradient_logger is not None:
+                     self.gradient_logger(
+                         self.model, rank=self.distributed_rank, where=self.where
+                     )
+ 
+-                # Optimizer step: the scaler will make sure gradients are not
+-                # applied if the gradients are infinite
+-                self.scaler.step(self.optim.optimizer)
++                # Non-finite gradient guard. Under bf16 AMP the GradScaler is
++                # disabled and does NOT skip steps on inf/nan, so we skip the
++                # optimizer step ourselves -- otherwise AdamW would write NaNs
++                # into every weight (root cause of the 2026-07-24 all-weights-NaN
++                # crash). Superset of the fp16 scaler's own inf-check.
++                if grads_finite:
++                    self._grad_skip_consecutive = 0
++                    self._grad_skip_window.append(0)
++                    # Optimizer step: for fp16 the scaler also guards inf grads
++                    self.scaler.step(self.optim.optimizer)
++                else:
++                    self._handle_nonfinite_grads(phase)
++                    self.optim.optimizer.zero_grad(set_to_none=True)
+                 self.scaler.update()
+ 
+                 # measure elapsed time
+@@ -958,7 +1084,14 @@
                      else:
                          return
  
@@ -16,3 +212,29 @@
                  loss_mts[loss_key].update(loss.item(), batch_size)
                  for extra_loss_key, extra_loss in extra_losses.items():
                      if extra_loss_key not in extra_loss_mts:
+@@ -1087,9 +1220,24 @@
+         if self.meters_conf:
+             self.meters = instantiate(self.meters_conf, _convert_="all")
+ 
++        # [GRAD-GUARD] non-finite gradient skip counters (persisted in ckpt)
++        self._grad_skip_total = 0
++        self._grad_skip_consecutive = 0
++        self._grad_skip_window = deque(maxlen=GRAD_GUARD_WINDOW)
++
++        # GradScaler (loss scaling) is ONLY correct for float16 AMP. Under
++        # bfloat16 it is unnecessary (bf16 has fp32's exponent range) and
++        # actively harmful: the scale backs off toward 0, and once 1/scale
++        # overflows fp32 the unscale step turns finite grads into NaN/Inf while
++        # `found_inf` stays 0, letting the optimizer corrupt every weight
++        # (the 2026-07-24 all-weights-NaN crash). So enable it for fp16 only.
+         self.scaler = torch.amp.GradScaler(
+             self.device,
+-            enabled=self.optim_conf.amp.enabled if self.optim_conf else False,
++            enabled=(
++                self.optim_conf is not None
++                and self.optim_conf.amp.enabled
++                and get_amp_type(self.optim_conf.amp.amp_dtype) == torch.float16
++            ),
+         )
+ 
+         self.gradient_clipper = (
