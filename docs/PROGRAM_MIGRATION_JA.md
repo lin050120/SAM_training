@@ -60,10 +60,13 @@ conda run -n sam301 python scripts/migrate_environment.py \
 
 ## 2. GitHub からプロジェクトを取得
 
-現在の汎用単一ターゲット学習ブランチを使います。
+現在のブランチを使います。汎用単一ターゲット学習に加えて、2026-07-24 の SAM3 数値
+修正 2 件（bf16 GradScaler のアンダーフロー、Triton focal-loss `gamma=0` の逆伝播
+NaN）を含みます。これ以前の stage ブランチにはこのパッチマニフェストが無く、
+epoch 6〜7 付近で全 NaN クラッシュします。
 
 ```bash
-git clone -b codex-stage-e5-general-target-training \
+git clone -b codex-stage-e8-nan-fix-and-test-loss-20260725 \
   git@github.com:lin050120/SAM_training.git \
   /home/book/book01
 ```
@@ -72,7 +75,7 @@ git clone -b codex-stage-e5-general-target-training \
 
 ```bash
 cd /home/book/book01
-git checkout codex-stage-e5-general-target-training
+git checkout codex-stage-e8-nan-fix-and-test-loss-20260725
 git pull
 ```
 

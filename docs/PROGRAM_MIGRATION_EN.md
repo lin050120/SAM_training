@@ -59,10 +59,13 @@ trainer path relative to the configured SAM301 root, so it does not need a per-P
 
 ## 2. Clone the Project from GitHub
 
-Use the current branch for generalized single-target training:
+Use the current branch. It carries generalized single-target training plus the
+two SAM3 numerical fixes from 2026-07-24: the bf16 GradScaler underflow and the
+Triton focal-loss `gamma=0` backward NaN. Earlier stage branches lack those patch
+manifests and crash with all-NaN weights around epoch 6-7:
 
 ```bash
-git clone -b codex-stage-e5-general-target-training \
+git clone -b codex-stage-e8-nan-fix-and-test-loss-20260725 \
   git@github.com:lin050120/SAM_training.git \
   /home/book/book01
 ```
@@ -71,7 +74,7 @@ If the repository already exists:
 
 ```bash
 cd /home/book/book01
-git checkout codex-stage-e5-general-target-training
+git checkout codex-stage-e8-nan-fix-and-test-loss-20260725
 git pull
 ```
 

@@ -67,10 +67,12 @@ conda run -n sam301 python scripts/migrate_environment.py \
 
 ## 2. 从 GitHub 下载项目代码
 
-建议拉当前通用单目标训练分支：
+建议拉当前分支（含通用单目标训练，以及 2026-07-24 的两个 SAM3 数值修复：
+bf16 GradScaler underflow 与 Triton focal-loss `gamma=0` 反向 NaN。更早的
+stage 分支缺少这两个补丁清单，训练到第 6~7 epoch 会全 NaN 崩溃）：
 
 ```bash
-git clone -b codex-stage-e5-general-target-training \
+git clone -b codex-stage-e8-nan-fix-and-test-loss-20260725 \
   git@github.com:lin050120/SAM_training.git \
   /home/book/book01
 ```
@@ -79,7 +81,7 @@ git clone -b codex-stage-e5-general-target-training \
 
 ```bash
 cd /home/book/book01
-git checkout codex-stage-e5-general-target-training
+git checkout codex-stage-e8-nan-fix-and-test-loss-20260725
 git pull
 ```
 
