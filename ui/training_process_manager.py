@@ -413,8 +413,8 @@ def parse_training_metrics(log_text: str) -> dict[str, str]:
 def read_training_loss_curves(
     run_dir: Path | None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Read 20-step train averages and epoch-level validation losses."""
-    empty = {"train": [], "val": []}
+    """Read train, validation, and checkpoint-recomputed Test losses."""
+    empty = {"train": [], "val": [], "test": []}
     if run_dir is None:
         return empty
     resolved_run = run_dir.expanduser().resolve(strict=False)
@@ -431,6 +431,7 @@ def read_training_loss_curves(
 
     train_points: dict[int, dict[str, Any]] = {}
     val_points: dict[float, dict[str, Any]] = {}
+    test_points: dict[float, dict[str, Any]] = {}
     logs_root = resolved_run / "logs"
     for trace_path in sorted(logs_root.glob("*/train_optimizer_step_loss.jsonl")):
         if not trace_path.is_file() or not _path_is_inside(trace_path, resolved_run):
@@ -487,9 +488,66 @@ def read_training_loss_curves(
                 "loss": loss,
                 "split": "val",
             }
+
+    test_loss_path = resolved_run / "evaluation" / "test_loss" / "checkpoint_loss.json"
+    if test_loss_path.is_file() and _path_is_inside(test_loss_path, resolved_run):
+        payload, _error = _read_json_dict(test_loss_path)
+        rows = payload.get("checkpoints") if payload is not None else None
+        if isinstance(rows, list):
+            for record in rows:
+                if not isinstance(record, dict) or record.get("status") != "completed":
+                    continue
+                try:
+                    raw_epoch = record.get("training_epoch")
+                    if raw_epoch is None:
+                        raw_epoch = float(record["epoch"]) - 1
+                    epoch = float(raw_epoch)
+                    loss = float(record["loss"])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if epoch < 0 or not math.isfinite(epoch) or not math.isfinite(loss):
+                    continue
+                display_epoch = int(epoch) if epoch.is_integer() else epoch
+                test_points[epoch] = {
+                    "epoch": display_epoch,
+                    "loss": loss,
+                    "split": "test",
+                }
+
+    # Per-epoch test loss written by the trainer itself. Read last so a live
+    # value overrides the offline recomputation for the same epoch; the offline
+    # JSON still supplies epochs that predate the in-trainer pass.
+    test_loss_field = f"Losses/test_{val_dataset_key}_loss"
+    for stats_path in sorted(logs_root.glob("*/test_stats.json")):
+        if not stats_path.is_file() or not _path_is_inside(stats_path, resolved_run):
+            continue
+        try:
+            lines = stats_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            try:
+                epoch = float(record["Trainer/epoch"])
+                loss = float(record[test_loss_field])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(epoch) or not math.isfinite(loss):
+                continue
+            test_points[epoch] = {
+                "epoch": int(epoch) if epoch.is_integer() else epoch,
+                "loss": loss,
+                "split": "test",
+            }
     return {
         "train": [train_points[key] for key in sorted(train_points)],
         "val": [val_points[key] for key in sorted(val_points)],
+        "test": [test_points[key] for key in sorted(test_points)],
     }
 
 

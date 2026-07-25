@@ -2499,6 +2499,35 @@ class TrainingLossCurveTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            test_loss_path = (
+                run_dir / "evaluation" / "test_loss" / "checkpoint_loss.json"
+            )
+            test_loss_path.parent.mkdir(parents=True)
+            test_loss_path.write_text(
+                json.dumps(
+                    {
+                        "checkpoints": [
+                            {
+                                "epoch": 1,
+                                "training_epoch": 0,
+                                "loss": 8.25,
+                                "status": "completed",
+                            },
+                            {
+                                "epoch": 2,
+                                "loss": 7.0,
+                                "status": "completed",
+                            },
+                            {
+                                "epoch": 3,
+                                "loss": 99.0,
+                                "status": "failed",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             points = read_training_loss_curves(run_dir)
 
@@ -2514,6 +2543,13 @@ class TrainingLossCurveTest(unittest.TestCase):
             [
                 {"epoch": 0, "loss": 7.5, "split": "val"},
                 {"epoch": 1, "loss": 6.0, "split": "val"},
+            ],
+        )
+        self.assertEqual(
+            points["test"],
+            [
+                {"epoch": 0, "loss": 8.25, "split": "test"},
+                {"epoch": 1, "loss": 7.0, "split": "test"},
             ],
         )
 
@@ -2537,7 +2573,7 @@ class TrainingLossCurveTest(unittest.TestCase):
             )
             points = read_training_loss_curves(run_dir)
 
-        self.assertEqual(points, {"train": [], "val": []})
+        self.assertEqual(points, {"train": [], "val": [], "test": []})
 
 
 class TrainingLossTraceTest(unittest.TestCase):

@@ -71,6 +71,7 @@ _preflight_launch_lock = threading.Lock()
 _consumed_preflight_tokens: set[str] = set()
 TRAIN_LOSS_CURVE_COLUMNS = ["optimizer_step", "loss", "split"]
 VAL_LOSS_CURVE_COLUMNS = ["epoch", "loss", "split"]
+TEST_LOSS_CURVE_COLUMNS = ["epoch", "loss", "split"]
 
 
 def _parse_optional_nonnegative_float(value: Any) -> tuple[float | None, str | None]:
@@ -546,16 +547,20 @@ def pause_training() -> str:
     )
 
 
-def current_training_loss_curves() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return the active or most recently finished run's train and val losses."""
+def current_training_loss_curves() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return the active or most recently finished run's loss curves."""
     _log, state = training_process_manager.snapshot()
     run_dir_value = state.metadata.get("run_dir")
+    if not run_dir_value:
+        resumable_runs = list_resumable_training_runs()
+        run_dir_value = resumable_runs[0] if resumable_runs else None
     points = read_training_loss_curves(
         Path(run_dir_value) if run_dir_value else None
     )
     return (
         pd.DataFrame(points["train"], columns=TRAIN_LOSS_CURVE_COLUMNS),
         pd.DataFrame(points["val"], columns=VAL_LOSS_CURVE_COLUMNS),
+        pd.DataFrame(points["test"], columns=TEST_LOSS_CURVE_COLUMNS),
     )
 
 
@@ -959,11 +964,24 @@ def build_training_tab() -> None:
             label="Val Loss 曲线（每 epoch）",
             show_fullscreen_button=True,
         )
+        test_loss_plot = gr.LinePlot(
+            value=pd.DataFrame(columns=TEST_LOSS_CURVE_COLUMNS),
+            x="epoch",
+            y="loss",
+            color="split",
+            color_map={"test": "#7251b5"},
+            title="Test Loss (Checkpoint Recomputed)",
+            x_title="Training Epoch",
+            y_title="Loss",
+            height=340,
+            label="Test Loss 曲线（按 checkpoint 补算）",
+            show_fullscreen_button=True,
+        )
     loss_curve_timer = gr.Timer(value=1.0, active=True)
     loss_curve_timer.tick(
         fn=current_training_loss_curves,
         inputs=[],
-        outputs=[training_loss_plot, validation_loss_plot],
+        outputs=[training_loss_plot, validation_loss_plot, test_loss_plot],
         queue=False,
     )
 

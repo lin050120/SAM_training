@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import hashlib
 import json
 import math
 import random
@@ -9,9 +11,13 @@ from typing import Any
 
 import numpy as np
 import torch
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
+from sam3.model.utils.misc import copy_data_to_device
 from sam3.train.loss.sam3_loss import Sam3LossWrapper
 from sam3.train.trainer import Trainer
-from sam3.train.utils.train_utils import Phase
+from sam3.train.utils.distributed import unwrap_ddp_if_wrapped
+from sam3.train.utils.train_utils import Phase, get_amp_type
 
 TRAIN_LOSS_TRACE_FILENAME = "train_optimizer_step_loss.jsonl"
 NAN_DIAG_TAG = "[NAN-DIAG]"
@@ -26,6 +32,15 @@ NAN_DIAG_MAX_DUMPS = 3
 # culprit sample/aug/op can be found offline.
 GRAD_NAN_DIAG_TAG = "[GRAD-NAN-DIAG]"
 GRAD_NAN_DIAG_MAX_DUMPS = 3
+
+# Per-epoch test-split loss, computed right after the normal validation pass so
+# the already-resident model/criterion are reused: no extra GPU memory beyond one
+# no-grad forward. Written one JSON object per line, same shape as SAM3's
+# val_stats.json, so the UI can plot it exactly like the val curve.
+TEST_LOSS_STATS_FILENAME = "test_stats.json"
+TEST_LOSS_TAG = "[TEST-LOSS]"
+VAL_SPLIT_DIRNAME = "val"
+TEST_SPLIT_DIRNAME = "test"
 
 
 class ValidationMatchingSam3LossWrapper(Sam3LossWrapper):
@@ -72,6 +87,7 @@ class LossTracingTrainer(Trainer):
         self,
         *,
         train_loss_window_optimizer_steps: int = 20,
+        test_loss_data: Any = None,
         **kwargs: Any,
     ) -> None:
         try:
@@ -98,6 +114,22 @@ class LossTracingTrainer(Trainer):
         # batch, accumulated across the accum micro-batches of one optimizer step,
         # so the grad-time guard hook can snapshot the actual failing batch.
         self._pending_step_datapoints: list[tuple[Any, Any]] = []
+        # Per-epoch test loss. `test_loss_data` is an optional explicit loader
+        # config (same shape as data.val); without it the test split is derived
+        # from data.val, so existing runs pick this up on resume with no config
+        # change. Instantiated lazily once, then reused every epoch.
+        self._test_loss_data_conf = test_loss_data
+        self._test_dataset: Any = None
+        self._test_dataset_resolved = False
+        # Identity of the annotations actually loaded. The dataset parses the
+        # file once at build time, so later edits to it do not change the
+        # numbers -- recording the digest here is what makes points from
+        # different runs (or a mid-project test-set change) comparable.
+        self._test_annotations_path: str | None = None
+        self._test_annotations_sha256: str | None = None
+        self._test_stats_path = (
+            Path(self.logging_conf.log_dir) / TEST_LOSS_STATS_FILENAME
+        )
 
     def _record_training_microbatch(self, loss: float, batch_size: int) -> None:
         if self.distributed_rank != 0:
@@ -346,6 +378,242 @@ class LossTracingTrainer(Trainer):
         finally:
             # Release the captured micro-batch refs for this optimizer step.
             self._pending_step_datapoints = []
+
+    # ------------------------------------------------------------------
+    # Per-epoch test-split loss
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _swap_split_dir(path_value: Any, source: str, target: str) -> str | None:
+        """Rewrite `.../<source>/...` as `.../<target>/...` on the last match."""
+        if not path_value:
+            return None
+        parts = list(Path(str(path_value)).parts)
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index] == source:
+                parts[index] = target
+                return str(Path(*parts))
+        return None
+
+    def _resolve_test_loader_conf(self):
+        """Explicit `test_loss_data` if configured, else `data.val` repointed at
+        the sibling test split. Returns None when there is no usable test set."""
+        if self._test_loss_data_conf is not None:
+            return OmegaConf.create(
+                OmegaConf.to_container(self._test_loss_data_conf, resolve=True)
+            )
+        val_conf = self.data_conf.get(Phase.VAL, None) if self.data_conf else None
+        if val_conf is None:
+            return None
+        conf = OmegaConf.create(OmegaConf.to_container(val_conf, resolve=True))
+        dataset = conf.get("dataset")
+        if dataset is None:
+            return None
+        annotations = self._swap_split_dir(
+            dataset.get("ann_file"), VAL_SPLIT_DIRNAME, TEST_SPLIT_DIRNAME
+        )
+        images = self._swap_split_dir(
+            dataset.get("img_folder"), VAL_SPLIT_DIRNAME, TEST_SPLIT_DIRNAME
+        )
+        if annotations is None or images is None:
+            return None
+        if not Path(annotations).is_file() or not Path(images).is_dir():
+            return None
+        dataset.ann_file = annotations
+        dataset.img_folder = images
+        return conf
+
+    def _get_test_dataset(self):
+        """Build the test loader once; None disables the feature for this run."""
+        if self._test_dataset_resolved:
+            return self._test_dataset
+        self._test_dataset_resolved = True
+        try:
+            conf = self._resolve_test_loader_conf()
+            if conf is None:
+                print(
+                    f"{TEST_LOSS_TAG} no usable test split; per-epoch test loss disabled",
+                    flush=True,
+                )
+                return None
+            self._test_dataset = instantiate(conf)
+            self._test_annotations_path = str(conf.dataset.ann_file)
+            self._test_annotations_sha256 = self._sha256_of_file(
+                self._test_annotations_path
+            )
+            print(
+                f"{TEST_LOSS_TAG} enabled, annotations={self._test_annotations_path} "
+                f"sha256={self._test_annotations_sha256}",
+                flush=True,
+            )
+        except Exception as exc:  # a broken test split must not stop training
+            self._test_dataset = None
+            print(
+                f"{TEST_LOSS_TAG} could not build the test loader: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return self._test_dataset
+
+    @staticmethod
+    def _sha256_of_file(path: str | Path) -> str | None:
+        """Digest of the annotations actually loaded; None if unreadable."""
+        try:
+            digest = hashlib.sha256()
+            with Path(path).open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _capture_rng_state() -> dict[str, Any]:
+        return {
+            "torch": torch.get_rng_state(),
+            "cuda": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }
+
+    @classmethod
+    def _restore_rng_state(cls, state: dict[str, Any]) -> None:
+        torch.set_rng_state(state["torch"])
+        if state["cuda"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(state["cuda"])
+        np.random.set_state(state["numpy"])
+        random.setstate(state["python"])
+
+    def _run_test_loss_eval(self) -> None:
+        """Sample-weighted mean loss over the whole test split, reusing the model
+        and criterion the validation pass just used -- so it costs one extra
+        no-grad forward and no extra GPU memory.
+
+        Deliberately does NOT go through the base `_step`: that bumps
+        `self.steps[phase]` and updates the phase meters, which are only reset at
+        the end of `val_epoch`, so reusing it would corrupt the validation
+        metrics with test data. The forward/loss below mirrors `_step` exactly.
+
+        Never raises, and restores RNG state, so a broken or missing test split
+        can neither stop training nor perturb the online augmentation stream.
+        """
+        dataset = self._get_test_dataset()
+        if dataset is None:
+            return
+        rng_state = self._capture_rng_state()
+        model = self.model
+        inner = unwrap_ddp_if_wrapped(model)
+        was_training = model.training
+        try:
+            amp_enabled = bool(self.optim_conf.amp.enabled) if self.optim_conf else False
+            amp_dtype = (
+                get_amp_type(self.optim_conf.amp.amp_dtype) if self.optim_conf else None
+            )
+            loader = dataset.get_loader(epoch=int(self.epoch))
+            model.eval()
+            if hasattr(inner, "on_validation_epoch_start"):
+                inner.on_validation_epoch_start()
+
+            weighted: dict[str, float] = {}
+            samples = 0
+            dataset_key: str | None = None
+            with torch.no_grad():
+                with torch.amp.autocast(
+                    device_type=self.device.type,
+                    enabled=amp_enabled,
+                    dtype=amp_dtype,
+                ):
+                    for batch in loader:
+                        dataset_key, datapoint = batch.popitem()
+                        datapoint = copy_data_to_device(
+                            datapoint, self.device, non_blocking=True
+                        )
+                        find_stages = model(datapoint)
+                        find_targets = [
+                            inner.back_convert(x) for x in datapoint.find_targets
+                        ]
+                        loss = self._find_loss(dataset_key)(find_stages, find_targets)
+                        batch_size = len(datapoint.img_batch)
+                        samples += batch_size
+                        components = (
+                            loss.items()
+                            if isinstance(loss, dict)
+                            else {"core_loss": loss}.items()
+                        )
+                        for name, value in components:
+                            weighted[name] = (
+                                weighted.get(name, 0.0)
+                                + float(value.detach().float().item()) * batch_size
+                            )
+
+            if hasattr(inner, "on_validation_epoch_end"):
+                inner.on_validation_epoch_end()
+            del loader
+            gc.collect()
+
+            if samples < 1 or dataset_key is None:
+                print(
+                    f"{TEST_LOSS_TAG} test split yielded no samples; skipping epoch "
+                    f"{self.epoch}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
+
+            averages = {name: total / samples for name, total in weighted.items()}
+            record: dict[str, Any] = {
+                f"Losses/test_{dataset_key}_{name}": value
+                for name, value in sorted(averages.items())
+            }
+            # Headline number, named like SAM3's own `Losses/val_<key>_loss`.
+            record[f"Losses/test_{dataset_key}_loss"] = averages.get(
+                "core_loss", float("nan")
+            )
+            record["Trainer/epoch"] = self.epoch
+            record["Trainer/test_samples"] = samples
+            # Pins each point to the exact test set it was measured on, so a
+            # mid-project change to the split is visible instead of silently
+            # mixing two incomparable curves.
+            record["Data/test_annotations"] = self._test_annotations_path
+            record["Data/test_annotations_sha256"] = self._test_annotations_sha256
+            self._write_test_stats(record, dataset_key)
+        except Exception as exc:  # test loss is diagnostic; never stop training
+            print(
+                f"{TEST_LOSS_TAG} failed for epoch {self.epoch}: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            self._restore_rng_state(rng_state)
+            if was_training:
+                model.train()
+
+    def _write_test_stats(self, record: dict[str, Any], dataset_key: str) -> None:
+        if self.distributed_rank != 0:
+            return
+        headline = record.get(f"Losses/test_{dataset_key}_loss")
+        print(
+            f"{TEST_LOSS_TAG} epoch={self.epoch} loss={headline} "
+            f"samples={record.get('Trainer/test_samples')}",
+            flush=True,
+        )
+        try:
+            self.logger.log_dict(record, self.epoch)
+        except Exception as exc:
+            print(
+                f"{TEST_LOSS_TAG} tensorboard log failed: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+        self._test_stats_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._test_stats_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    def run_val(self):
+        """Normal validation, then the test-split loss for the same weights."""
+        super().run_val()
+        self._run_test_loss_eval()
 
     def _step(self, batch: Any, model: Any, phase: str):
         # The base _step pops (key, datapoint) out of this dict, so grab a

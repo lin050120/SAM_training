@@ -196,6 +196,8 @@ JA: dict[str, str] = {
     "Train Loss 曲线（20 optimizer step 滑动平均）":
         "Train Loss 曲線（20 optimizer step 移動平均）",
     "Val Loss 曲线（每 epoch）": "Val Loss 曲線（epoch ごと）",
+    "Test Loss 曲线（按 checkpoint 补算）":
+        "Test Loss 曲線（checkpoint ごとに再計算）",
     "### 阶段 C: 从最近完整 Checkpoint 恢复": "### ステージ C: 最新の完全な Checkpoint から再開",
     "训练 run（含 checkpoint.pt）": "学習 run（checkpoint.pt を含む）",
     "刷新可恢复 run": "再開可能な run を更新",
