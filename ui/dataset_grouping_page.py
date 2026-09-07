@@ -79,7 +79,7 @@ def build_dataset_grouping_tab():
         load = gr.Button("加载 / 追加图片", variant="primary")
         clear = gr.Button("清空当前选择池（不删除文件）")
     with gr.Row():
-        query = gr.Textbox(label="筛选文件名 / 路径 / 场景组", value="")
+        query = gr.Textbox(label="筛选文件名 / 路径 / 场景组（回车应用）", value="")
         split_filter = gr.Dropdown(["all", "unassigned", "train", "val", "test"], value="all", label="显示分组")
         page = gr.Number(value=1, precision=0, minimum=1, label="页码（每页24张）")
         refresh = gr.Button("刷新 / 跳页")
@@ -136,8 +136,11 @@ def build_dataset_grouping_tab():
     move.click(move_cb, [state, selected, target, group], state).success(_view, [state, query, split_filter, page], view_outputs)
     restore.click(restore_cb, [state, plan], state).success(_view, [state, query, split_filter, page], view_outputs)
     refresh.click(_view, [state, query, split_filter, page], view_outputs)
-    for component in [query, split_filter]:
-        component.change(_view, [state, query, split_filter, page], view_outputs)
+    # The dropdown changes discretely, so live updates are cheap. The textbox
+    # fires .change on every keystroke, and each redraw decodes and annotates 24
+    # thumbnails — so it applies on Enter (or the refresh button) instead.
+    split_filter.change(_view, [state, query, split_filter, page], view_outputs)
+    query.submit(_view, [state, query, split_filter, page], view_outputs)
 
     def select_page(s, q, f, p):
         rows = [r for r in s["records"] if (f == "all" or r["split"] == f)

@@ -110,17 +110,29 @@ def assign(state: dict, keys: list[str], split: str, group: str = "") -> dict:
 
 
 def restore_plan(state: dict, plan_path: str) -> dict:
+    """Re-apply a saved split, matching images by CONTENT rather than by path.
+
+    `key` embeds the absolute path of the source COCO, so matching on it bound a
+    plan to the machine and the directory layout it was made on; moving the
+    source tree made every old plan unrestorable. Image sha256 is the portable
+    identity, and add_sources() already refuses to load two images with the same
+    content, so it is unique within a state. `source_sha256` still guards the
+    annotations, and is content-derived, so it survives a move too.
+
+    Plans written before this change already carry sha256, so they restore under
+    the new rule without a format change.
+    """
     plan = json.loads(Path(plan_path).expanduser().read_text())
     rows = plan["assignments"]
-    if len({r["key"] for r in rows}) != len(rows):
+    if len({r["sha256"] for r in rows}) != len(rows):
         raise ValueError("划分名单存在重复项")
-    mapping = {r["key"]: r for r in rows}
+    mapping = {r["sha256"]: r for r in rows}
     result = copy.deepcopy(state)
-    if set(mapping) != {r["key"] for r in result["records"]}:
+    if set(mapping) != {r["sha256"] for r in result["records"]}:
         raise ValueError("请加载与名单完全相同的源数据")
     for r in result["records"]:
-        p = mapping[r["key"]]
-        if p["sha256"] != r["sha256"] or p["source_sha256"] != r["source_sha256"]:
+        p = mapping[r["sha256"]]
+        if p["source_sha256"] != r["source_sha256"]:
             raise ValueError("图片或标注已变化，不能恢复旧名单")
         if p["split"] not in {"train", "val", "unassigned", "test"}:
             raise ValueError("名单包含无效分组")
