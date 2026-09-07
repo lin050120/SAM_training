@@ -98,6 +98,11 @@ dataset with `allowed_for_formal_training=true` after human review (the UI has
 a dataset registration tab; see `docs/DATASET_REGISTRATION_UI_CN.md`).
 Unregistered datasets are treated as not reviewed (fail-safe default).
 
+When validation must isolate whole shooting scenes rather than sample at
+random, the "图片分组" (image grouping) tab assigns Train/Val per image with an
+annotated preview, tags each image with a scene group, and exports to a new
+directory without touching the sources; see `docs/DATASET_GROUPING_CN.md`.
+
 ## Checkpoint Export (Trainer Checkpoint → Inference Checkpoint)
 
 A trainer checkpoint (`checkpoints/checkpoint.pt`) cannot be passed directly to

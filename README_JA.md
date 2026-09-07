@@ -52,6 +52,11 @@ conda run -n sam301 python scripts/manage_sam301_patch.py verify   # exit 0 (PAT
 
 このガードは**全ての**データセットに適用されます。新ターゲット（例：cable）も同様です：データセットパスと学習 prompt を与えるだけで smoke 実行（`max_epochs<=1`）は可能ですが、formal または複数 epoch の学習には、人手レビュー後に `allowed_for_formal_training=true` でデータセットを登録することが追加で必要です（UI の「データセット登録」タブが使えます。`docs/DATASET_REGISTRATION_UI_JA.md` 参照）。未登録データセットは未レビューとして扱われます（フェイルセーフのデフォルト）。
 
+検証セットを撮影シーン単位で分離したい（ランダム抽出では不十分な）場合は、
+「画像グループ分け」タブで画像ごとに Train/Val を指定でき（アノテーション付き
+プレビュー）、各画像にシーングループを付与し、元データを変更せず新しい
+ディレクトリへエクスポートできます。`docs/DATASET_GROUPING_JA.md` を参照。
+
 ## Checkpoint エクスポート（trainer checkpoint → inference checkpoint）
 
 trainer checkpoint（`checkpoints/checkpoint.pt`）は推論エントリポイントに直接渡せません：`sam3/model_builder.py` の loader は trainer checkpoint からゼロ個の重みを静かに読み込んでしまうため、`Sam3Adapter` は実際の構造で checkpoint 種別を識別し、trainer checkpoint をエクスポートのヒント付きで拒否します（`docs/CHECKPOINT_EXPORT_AND_INFERENCE_JA.md` 参照）。先にエクスポート：

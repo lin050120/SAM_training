@@ -11,6 +11,7 @@ import gradio as gr
 
 from ui.cvat_page import build_cvat_tab
 from ui.dataset_registry_page import build_dataset_registry_tab
+from ui.dataset_grouping_page import build_dataset_grouping_tab
 from ui.history_page import build_history_tab
 from ui.i18n import build_language_radio, wire_language_switch
 from ui.inference_page import build_inference_tab
@@ -41,6 +42,8 @@ def build_app() -> gr.Blocks:
                 build_training_tab()
             with gr.Tab("数据集登记"):
                 build_dataset_registry_tab()
+            with gr.Tab("图片分组"):
+                build_dataset_grouping_tab()
             with gr.Tab("Checkpoint 评估"):
                 build_checkpoint_evaluation_tab()
         # Must run after every page is built: it snapshots all components once

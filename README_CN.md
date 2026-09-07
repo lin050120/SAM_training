@@ -52,6 +52,10 @@ conda run -n sam301 python scripts/manage_sam301_patch.py verify   # 必须 exit
 
 该守卫适用于**所有**数据集，包括新目标（例如 cable）：只提供数据集路径和训练 prompt 就能跑 smoke（`max_epochs<=1`），但 formal 或多 epoch 训练还需要在人工审核后以 `allowed_for_formal_training=true` 登记数据集（可用 UI 的「数据集登记」页，见 `docs/DATASET_REGISTRATION_UI_CN.md`）。未登记数据集一律按未审核处理（fail-safe 默认）。
 
+当验证集需要按整个拍摄场景隔离、而不是随机抽样时，可用「图片分组」页按图片指定
+Train/Val（带标注预览），给每张图打场景组标签，并导出到新目录、不改动源数据；
+见 `docs/DATASET_GROUPING_CN.md`。
+
 ## Checkpoint 导出（trainer checkpoint → inference checkpoint）
 
 trainer checkpoint（`checkpoints/checkpoint.pt`）不能直接传给推理入口：`sam3/model_builder.py` 的 loader 会从中静默加载零个权重，所以 `Sam3Adapter` 按真实结构识别 checkpoint 类型，对 trainer checkpoint 直接拒绝并提示导出命令（见 `docs/CHECKPOINT_EXPORT_AND_INFERENCE_CN.md`）。先导出：
