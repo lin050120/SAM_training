@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="ignore cached per-checkpoint results")
     parser.add_argument("--max-images", type=int, default=None, help="limit validation images (smoke runs only)")
     parser.add_argument("--smoke", action="store_true", help="mark this evaluation as a smoke run (not an official ranking)")
+    parser.add_argument("--no-visualizations", action="store_true", help="skip per-image overlay PNGs (~1 GB/checkpoint); metrics are unaffected")
     parser.add_argument("--json", action="store_true", help="print the machine-readable summary")
     args = parser.parse_args(argv)
 
@@ -82,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     overrides["force"] = bool(args.force)
     overrides["smoke"] = bool(args.smoke)
     overrides["split"] = args.split
+    overrides["write_visualizations"] = not args.no_visualizations
     if args.max_images is not None:
         overrides["max_images"] = args.max_images
         overrides["smoke"] = True  # a truncated validation set is never an official ranking

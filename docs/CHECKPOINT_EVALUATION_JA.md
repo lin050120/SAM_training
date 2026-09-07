@@ -139,3 +139,53 @@ UI を起動（通常のターミナル）：`conda run -n sam301 python /home/b
 ## 13. 最良モデルのエクスポート
 
 `best_checkpoint.json` に保存されるのは **trainer checkpoint のパス参照**（10GB のファイルはコピーしない）。推論モデルのエクスポートは既存の `scripts/export_sam3_inference_checkpoint.py` を再利用（strict key カバレッジ、base との重み差分確認、アトミック書き込み）し、`<run_dir>/checkpoints/inference_best.pt` を出力。エクスポート失敗は評価結果そのものに影響しない（`export_best.status` が evaluation_summary.json に記録される）。
+
+## CPU 評価（`--device cpu`）
+
+評価はすべて CPU 上で実行でき、GPU を学習に丸ごと残せます——学習のピークは約 27 GB / 32 GB
+で、CUDA 評価を並行させると学習を OOM させる危険があります。典型的な用途は、学習中に
+書き出されたばかりの epoch checkpoint を使って epoch ごとの性能を測ることです。
+
+```bash
+conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \\
+  --run-dir <run_dir> --device cpu --no-baseline --no-visualizations
+```
+
+**注意：このパスは 2026-09-06 以前は壊れていました**。`--device cpu` は前向きの途中で
+デバイス / dtype の不一致により例外を投げていました。`core/sam3_adapter.py` の 3 箇所を
+修正しています（詳細は同ファイルのコメント）：
+
+1. `Sam3Adapter` が `Sam3Processor` を構築する際に device を渡しておらず、プロセッサが
+   既定値のまま cuda 上にテンソルを作っていた。
+2. `sam3.perflib.fused.addmm_act` が無条件に bf16 を返すため、autocast なしの CPU 前向きが
+   bf16 を fp32 の Linear に流し込んでいた。現在は CPU でも bf16 autocast を通す
+   （`_decide_dtype` が非 cuda で None を返さなくなった）。
+3. `PositionEmbeddingSine.cache` と decoder の `compilable_cord_cache` が**構築時**に
+   ハードコードされた `device="cuda"` で事前計算され、しかも通常の dict / tuple のため
+   `model.to()` では移動できなかった。`core.sam3_adapter.relocate_module_caches()` を追加。
+
+**数値の整合性**：CPU も bf16 autocast を通すので GPU と同一条件です。同一 checkpoint での
+実測値：
+
+| 指標 | GPU bf16 | CPU bf16 | 差 |
+|---|---|---|---|
+| val mean IoU | 0.93256 | 0.93242 | −0.00014 |
+| val Boundary F1@2px | 0.85270 | 0.85243 | −0.00027 |
+| test mean IoU | 0.90368 | 0.90403 | +0.00036 |
+| test Boundary F1@2px | 0.76819 | 0.76893 | +0.00074 |
+
+IoU / Boundary F1 / 面積比のずれは、この検証セットで識別可能な差より 1 桁小さく、両デバイスの
+数値は直接比較できます。**閾値型の指標はぶれがやや大きい**：test recall@IoU0.90 は +0.008
+（369 インスタンス中 3 個が 0.90 の線をまたぐ）、val FP/画像 は +0.026（39 枚中 1 個増）。
+閾値付近の量子化ノイズです——この 2 指標を厳密に比較する場合は、全 checkpoint で同じ device
+を使ってください。
+
+**速度**（RTX 5090 マシン、24 コア Intel Ultra 9 285K）：1 枚あたり約 7 秒（占有時）から
+12 秒（学習と CPU を奪い合う場合）。61 枚の validation + test 全体で約 8〜12 分です。
+
+## `--no-visualizations`
+
+画像ごとのオーバーレイ PNG をスキップします。epoch ごとに評価すると、これらは
+checkpoint あたり約 1 GB、16 epoch × 2 アームで 32 GB になります。**指標には一切影響しない**
+ため、結果キャッシュキー（`metric_affecting_dict()`）にも意図的に含めていません——
+このスイッチの有無にかかわらずキャッシュは共通です。

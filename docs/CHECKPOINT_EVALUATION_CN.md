@@ -139,3 +139,47 @@ conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \
 ## 13. 最佳模型导出
 
 `best_checkpoint.json` 中保存的是 **trainer checkpoint 路径引用**（不复制 10GB 文件）。导出推理模型复用既有 `scripts/export_sam3_inference_checkpoint.py`（strict key 覆盖、与 base 权重差异确认、原子写入），输出 `<run_dir>/checkpoints/inference_best.pt`，导出失败不影响评价结果本身（`export_best.status` 记录于 evaluation_summary.json）。
+
+## CPU 评测（`--device cpu`）
+
+评测可以整条跑在 CPU 上，把 GPU 完整留给训练——训练峰值约 27 GB / 32 GB，并发的 CUDA
+评测有把训练 OOM 掉的风险。典型用途：训练进行中，用刚写出的 epoch checkpoint 做逐 epoch
+的性能测量。
+
+```bash
+conda run -n sam301 python scripts/evaluate_sam3_checkpoints.py \
+  --run-dir <run_dir> --device cpu --no-baseline --no-visualizations
+```
+
+**注意：这条路径在 2026-09-06 之前是坏的**，`--device cpu` 会在前向中途因设备/dtype 不匹配
+抛异常。修复了 `core/sam3_adapter.py` 里的三处（详见该文件注释）：
+
+1. `Sam3Adapter` 构造 `Sam3Processor` 时没有传 device，处理器按默认值在 cuda 上造张量。
+2. `sam3.perflib.fused.addmm_act` 无条件返回 bf16，非 autocast 的 CPU 前向会把 bf16 喂进
+   fp32 的 Linear。现在 CPU 也走 bf16 autocast（`_decide_dtype` 不再对非 cuda 返回 None）。
+3. `PositionEmbeddingSine.cache` 与 decoder 的 `compilable_cord_cache` 在**构造时**用硬编码
+   `device="cuda"` 预计算，且是普通 dict / tuple，`model.to()` 搬不动它们。新增
+   `core.sam3_adapter.relocate_module_caches()` 处理。
+
+**数值一致性**：CPU 也走 bf16 autocast，与 GPU 同口径。在同一个 checkpoint 上实测：
+
+| 指标 | GPU bf16 | CPU bf16 | 差 |
+|---|---|---|---|
+| val mean IoU | 0.93256 | 0.93242 | −0.00014 |
+| val Boundary F1@2px | 0.85270 | 0.85243 | −0.00027 |
+| test mean IoU | 0.90368 | 0.90403 | +0.00036 |
+| test Boundary F1@2px | 0.76819 | 0.76893 | +0.00074 |
+
+IoU / Boundary F1 / 面积比的偏差比这套验证集的可分辨阈值小一个量级，两种设备的数字可以
+直接互相比较。**阈值型指标抖动略大**：test recall@IoU0.90 相差 +0.008（369 个实例里 3 个
+跨过 0.90 这条线），val FP/图 相差 +0.026（39 张里多 1 个），属阈值附近的量化噪声——
+需要严格对比这两个指标时，请让所有 checkpoint 用同一个 device。
+
+**速度**（RTX 5090 主机，24 核 Intel Ultra 9 285K）：单图约 7 秒（独占）到 12 秒
+（与训练争抢 CPU）。61 张图的 validation + test 全流程约 8–12 分钟。
+
+## `--no-visualizations`
+
+跳过每张图的叠加 PNG。逐 epoch 评测时这些图约 1 GB / checkpoint，16 个 epoch × 2 组就是
+32 GB。**它不影响任何指标**，因此也刻意不进结果缓存键（`metric_affecting_dict()`）——
+加不加这个开关，缓存都通用。

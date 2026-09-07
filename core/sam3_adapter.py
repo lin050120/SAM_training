@@ -24,6 +24,49 @@ from core.mask_nms import mask_bbox_xywh
 from core.npz_io import InstanceSet
 
 
+
+def relocate_module_caches(model, device: str) -> int:
+    """Move plain-dict tensor caches that ``Module.to()`` cannot reach.
+
+    Several sam3 modules precompute grids at construction time with a hardcoded
+    ``device="cuda"`` and stash them in ordinary dicts:
+    ``PositionEmbeddingSine.cache`` (position grids) and the decoder's
+    ``coord_cache`` (box-RPB coordinate grids, stored as tuples). Parameters and
+    buffers follow ``model.to(device)``; a dict does not, so a CPU-loaded model
+    still holds CUDA tensors there and dies mid-forward with a cross-device
+    error. Returns the number of tensors moved (0 when already correct).
+    """
+    moved = 0
+    target = torch.device(device)
+
+    def _relocate(value):
+        nonlocal moved
+        if torch.is_tensor(value):
+            if value.device != target:
+                moved += 1
+                return value.to(target)
+            return value
+        if isinstance(value, tuple):
+            return tuple(_relocate(v) for v in value)
+        if isinstance(value, list):
+            return [_relocate(v) for v in value]
+        return value
+
+    for module in model.modules():
+        for name in list(vars(module)):
+            if not name.endswith("cache"):
+                continue
+            cache = getattr(module, name)
+            if isinstance(cache, dict):
+                for key, value in list(cache.items()):
+                    cache[key] = _relocate(value)
+            else:
+                # e.g. the decoder's `compilable_cord_cache`, a bare tuple of
+                # coordinate grids rather than a dict.
+                setattr(module, name, _relocate(cache))
+    return moved
+
+
 class Sam3Adapter:
     """Small SAM3 image inference adapter used by the unified inference pipeline."""
 
@@ -97,7 +140,8 @@ class Sam3Adapter:
                 self.__class__._cached_model = self.model
                 self.__class__._cached_metadata = self.checkpoint_metadata
         self.model.eval()
-        self.processor = Sam3Processor(self.model)
+        relocate_module_caches(self.model, self.device)
+        self.processor = Sam3Processor(self.model, device=self.device)
         self.processor.set_confidence_threshold(confidence_threshold)
         self.dtype_mode = dtype_mode
         self.autocast_dtype = self._decide_dtype(dtype_mode)
@@ -136,15 +180,20 @@ class Sam3Adapter:
         adapter.device = device
         adapter.model = model.to(device)
         adapter.model.eval()
-        adapter.processor = Sam3Processor(adapter.model)
+        relocate_module_caches(adapter.model, adapter.device)
+        adapter.processor = Sam3Processor(adapter.model, device=adapter.device)
         adapter.processor.set_confidence_threshold(confidence_threshold)
         adapter.dtype_mode = dtype_mode
         adapter.autocast_dtype = adapter._decide_dtype(dtype_mode)
         return adapter
 
     def _decide_dtype(self, dtype_mode: str) -> torch.dtype | None:
-        if self.device != "cuda":
-            return None
+        # CPU needs autocast too, not just as a speed knob: sam3.perflib.fused
+        # addmm_act unconditionally returns bf16, so a non-autocast CPU forward
+        # feeds bf16 into the next fp32 Linear and dies. Running CPU under the
+        # same bf16 autocast as CUDA also keeps the two devices numerically
+        # comparable, which is what lets per-epoch CPU metrics be compared with
+        # GPU-evaluated runs.
         if dtype_mode == "bf16":
             return torch.bfloat16
         if dtype_mode == "fp16":
@@ -156,7 +205,7 @@ class Sam3Adapter:
     def _autocast_context(self):
         if self.autocast_dtype is None:
             return nullcontext()
-        return torch.autocast(device_type="cuda", dtype=self.autocast_dtype)
+        return torch.autocast(device_type=self.device, dtype=self.autocast_dtype)
 
     @staticmethod
     def _to_pil(image: np.ndarray | str | Path | Image.Image) -> Image.Image:

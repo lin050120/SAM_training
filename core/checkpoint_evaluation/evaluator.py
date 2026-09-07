@@ -92,6 +92,10 @@ class EvaluationConfig:
     smoke: bool = False
     export_best: bool = False
     split: str = "all"  # validation | test | all
+    # Per-image overlay PNGs cost ~1 GB per checkpoint. Sweeps that evaluate
+    # every epoch turn that into tens of GB, so they turn it off; it changes no
+    # metric and is deliberately absent from metric_affecting_dict().
+    write_visualizations: bool = True
 
     def metric_affecting_dict(self) -> dict[str, Any]:
         return {
@@ -371,7 +375,8 @@ def _evaluate_one_checkpoint(
                 match = match_instances(gt.masks, pred_masks)
                 raw_npz, _meta = write_raw_predictions(split_dir, split, ckpt_key, gt, instances, params, elapsed)
                 match_record = write_match_record(split_dir, split, ckpt_key, candidate.name, gt, pred_masks, match, raw_npz)
-                vis_paths = write_visualizations(split_dir, split, ckpt_key, gt, pred_masks, match)
+                if config.write_visualizations:
+                    vis_paths = write_visualizations(split_dir, split, ckpt_key, gt, pred_masks, match)
                 image_metrics = compute_image_metrics(
                     gt.file_name, gt.masks, pred_masks, match, config.boundary_tolerance_px
                 )
