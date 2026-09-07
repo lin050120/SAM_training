@@ -67,6 +67,7 @@ def scan_trainer_checkpoints(run_dir: str | Path) -> list[CheckpointListItem]:
 
     candidates = sorted(ckpt_dir.glob("checkpoint*.pt"))
     hashes: dict[str, list[Path]] = {}
+    digests: dict[Path, str | None] = {}
     rows: list[CheckpointListItem] = []
     for path in candidates:
         try:
@@ -74,9 +75,12 @@ def scan_trainer_checkpoints(run_dir: str | Path) -> list[CheckpointListItem]:
             hashes.setdefault(digest, []).append(path)
         except OSError:
             digest = None
+        digests[path] = digest
 
     for path in candidates:
-        digest = sha256_of_file(path) if path.is_file() else None
+        # Reuse the digest calculated above for alias detection. Re-hashing every
+        # checkpoint here made one logical refresh read every large file twice.
+        digest = digests.get(path)
         identity = identify_checkpoint(path)
         epoch = _epoch_from_name(path, identity.detail.get("epoch"))
         alias_of = None

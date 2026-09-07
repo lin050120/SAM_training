@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import json
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -19,7 +20,8 @@ import gradio as gr
 
 from core.config import BOOK_ROOT, DEFAULT_CONDA_ENV, DEFAULT_SAM3_CHECKPOINT, DEFAULT_TRAINING_RUN_ROOT
 from core.dataset_identity import resolve_validation_identity
-from core.sam_model_registry import model_provenance, scan_trainer_checkpoints
+from core.checkpoint_export import sha256_of_file
+from core.sam_model_registry import CheckpointListItem, model_provenance, scan_trainer_checkpoints
 from ui.process_manager import ProcessManager
 from ui.ui_utils import format_json, logger
 
@@ -250,13 +252,76 @@ def export_best_model(run_dir_str: str) -> str:
     return f"导出失败 (exit={state.returncode}):\n{log_text[-1000:]}"
 
 
-def refresh_checkpoint_list(run_dir_str: str) -> tuple[list[list[Any]], str, Any, str, str, str]:
+def _empty_checkpoint_snapshot() -> dict[str, Any]:
+    return {"run_dir": "", "items": []}
+
+
+def _checkpoint_snapshot(run_dir_str: str, items: list[CheckpointListItem]) -> dict[str, Any]:
+    return {
+        "run_dir": str(Path(run_dir_str).expanduser().resolve(strict=False)),
+        "items": [asdict(item) for item in items],
+    }
+
+
+def _checkpoint_from_snapshot(
+    run_dir_str: str,
+    checkpoint_name: str,
+    snapshot: dict[str, Any] | None,
+) -> CheckpointListItem:
+    if not isinstance(snapshot, dict):
+        raise ValueError("checkpoint 列表尚未刷新")
+    expected_run = str(Path(run_dir_str).expanduser().resolve(strict=False))
+    if snapshot.get("run_dir") != expected_run:
+        raise ValueError("Run 目录在刷新后发生变化，请重新刷新 Checkpoint 列表")
+    raw_items = snapshot.get("items")
+    if not isinstance(raw_items, list):
+        raise ValueError("checkpoint 列表缓存无效，请重新刷新")
+    raw = next(
+        (item for item in raw_items if isinstance(item, dict) and item.get("name") == checkpoint_name),
+        None,
+    )
+    if raw is None:
+        raise ValueError(f"checkpoint 不在已刷新的列表中: {checkpoint_name}")
+    try:
+        return CheckpointListItem(**raw)
+    except TypeError as exc:
+        raise ValueError("checkpoint 列表缓存结构无效，请重新刷新") from exc
+
+
+def _checkpoint_detail(selected: CheckpointListItem) -> tuple[str, str]:
+    detail = {
+        "name": selected.name,
+        "path": selected.path,
+        "epoch": selected.epoch,
+        "sha256": selected.sha256,
+        "is_alias": selected.is_alias,
+        "alias_of": selected.alias_of,
+        "checkpoint_type": selected.checkpoint_type,
+        "can_export": selected.can_export,
+        "existing_inference_model": selected.existing_inference_model,
+        "suggested_output_name": selected.suggested_output_name,
+        "note": "checkpoint.pt 与编号 checkpoint 字节相同，通常不建议重复导出。" if selected.alias_of else "",
+    }
+    return format_json(detail), selected.suggested_output_name
+
+
+def refresh_checkpoint_list(
+    run_dir_str: str,
+) -> tuple[list[list[Any]], str, Any, str, str, str, dict[str, Any]]:
     if not run_dir_str:
-        return [], "未选择 run", gr.update(choices=[], value=None), "", "", ""
+        return [], "未选择 run", gr.update(choices=[], value=None), "", "", "", _empty_checkpoint_snapshot()
     try:
         items = scan_trainer_checkpoints(run_dir_str)
     except Exception as exc:
-        return [], f"ERROR: {exc}", gr.update(choices=[], value=None), "", "", ""
+        return (
+            [],
+            f"ERROR: {exc}",
+            gr.update(choices=[], value=None),
+            "",
+            "",
+            "",
+            _empty_checkpoint_snapshot(),
+        )
     rows = [
         [
             item.name,
@@ -274,35 +339,32 @@ def refresh_checkpoint_list(run_dir_str: str) -> tuple[list[list[Any]], str, Any
     ]
     choices = [item.name for item in items]
     selected = choices[0] if choices else ""
-    detail, output_name = checkpoint_selection_detail(run_dir_str, selected)
+    detail, output_name = _checkpoint_detail(items[0]) if items else ("", "")
     output_dir = str(Path(run_dir_str).expanduser().resolve(strict=False) / "checkpoints") if choices else ""
-    return rows, f"发现 {len(items)} 个 checkpoint", gr.update(choices=choices, value=selected or None), detail, output_dir, output_name
+    snapshot = _checkpoint_snapshot(run_dir_str, items)
+    return (
+        rows,
+        f"发现 {len(items)} 个 checkpoint；选择时使用本次校验快照，导出前仅复核所选文件",
+        gr.update(choices=choices, value=selected or None),
+        detail,
+        output_dir,
+        output_name,
+        snapshot,
+    )
 
 
-def checkpoint_selection_detail(run_dir_str: str, checkpoint_name: str) -> tuple[str, str]:
+def checkpoint_selection_detail(
+    run_dir_str: str,
+    checkpoint_name: str,
+    snapshot: dict[str, Any] | None,
+) -> tuple[str, str]:
     if not run_dir_str or not checkpoint_name:
         return "未选择 checkpoint", ""
     try:
-        items = scan_trainer_checkpoints(run_dir_str)
+        selected = _checkpoint_from_snapshot(run_dir_str, checkpoint_name, snapshot)
     except Exception as exc:
         return f"ERROR: {exc}", ""
-    selected = next((item for item in items if item.name == checkpoint_name), None)
-    if selected is None:
-        return f"ERROR: checkpoint 不在列表中: {checkpoint_name}", ""
-    detail = {
-        "name": selected.name,
-        "path": selected.path,
-        "epoch": selected.epoch,
-        "sha256": selected.sha256,
-        "is_alias": selected.is_alias,
-        "alias_of": selected.alias_of,
-        "checkpoint_type": selected.checkpoint_type,
-        "can_export": selected.can_export,
-        "existing_inference_model": selected.existing_inference_model,
-        "suggested_output_name": selected.suggested_output_name,
-        "note": "checkpoint.pt 与编号 checkpoint 字节相同，通常不建议重复导出。" if selected.alias_of else "",
-    }
-    return format_json(detail), selected.suggested_output_name
+    return _checkpoint_detail(selected)
 
 
 def export_selected_checkpoint(
@@ -311,6 +373,7 @@ def export_selected_checkpoint(
     output_dir_str: str,
     output_name: str,
     overwrite: bool,
+    snapshot: dict[str, Any] | None,
 ) -> tuple[str, str]:
     if not run_dir_str:
         return "BLOCKED: 未选择 run", "{}"
@@ -319,12 +382,35 @@ def export_selected_checkpoint(
     if evaluation_process_manager.is_running():
         return "BLOCKED: 已有一个评价/导出任务在运行", "{}"
     try:
-        items = scan_trainer_checkpoints(run_dir_str)
-        selected = next((item for item in items if item.name == checkpoint_name), None)
-        if selected is None:
-            return f"BLOCKED: checkpoint 不在列表中: {checkpoint_name}", "{}"
+        selected = _checkpoint_from_snapshot(run_dir_str, checkpoint_name, snapshot)
         if not selected.can_export:
             return f"BLOCKED: 该文件类型为 {selected.checkpoint_type}，不能作为 trainer checkpoint 导出", format_json(selected.__dict__)
+        checkpoint_dir = (
+            Path(run_dir_str).expanduser().resolve(strict=False) / "checkpoints"
+        ).resolve(strict=False)
+        selected_path = (checkpoint_dir / checkpoint_name).resolve(strict=False)
+        if Path(checkpoint_name).name != checkpoint_name or selected_path.parent != checkpoint_dir:
+            return "BLOCKED: checkpoint 名称或路径不安全，请重新刷新列表", "{}"
+        if selected_path != Path(selected.path).expanduser().resolve(strict=False):
+            return "BLOCKED: checkpoint 路径与刷新快照不一致，请重新刷新列表", "{}"
+        if not selected_path.is_file():
+            return f"BLOCKED: checkpoint 已不存在，请重新刷新列表: {selected_path}", "{}"
+        current_size = selected_path.stat().st_size
+        if current_size != selected.size_bytes:
+            return (
+                "BLOCKED: checkpoint 大小在刷新后发生变化，请重新刷新列表 "
+                f"(刷新时={selected.size_bytes}, 当前={current_size})",
+                "{}",
+            )
+        if not selected.sha256:
+            return "BLOCKED: 刷新时未能取得 checkpoint SHA-256，请重新刷新列表", "{}"
+        current_sha256 = sha256_of_file(selected_path)
+        if current_sha256 != selected.sha256:
+            return (
+                "BLOCKED: checkpoint SHA-256 在刷新后发生变化，请重新刷新列表 "
+                f"(刷新时={selected.sha256}, 当前={current_sha256})",
+                "{}",
+            )
         output_dir = Path(output_dir_str).expanduser().resolve(strict=False)
         if not output_dir.is_dir():
             return f"BLOCKED: 输出目录不存在: {output_dir}", "{}"
@@ -340,7 +426,7 @@ def export_selected_checkpoint(
         from core.checkpoint_export import export_inference_checkpoint
 
         result = export_inference_checkpoint(
-            trainer_checkpoint_path=selected.path,
+            trainer_checkpoint_path=selected_path,
             output_path=output_path,
             overwrite=overwrite,
         )
@@ -406,6 +492,7 @@ def build_checkpoint_evaluation_tab() -> None:
         manual_run_dir = gr.Textbox(label="Run 目录", value=(list_runs_with_checkpoints() or [""])[0])
         refresh_ckpt_btn = gr.Button("刷新 Checkpoint 列表")
     checkpoint_table = gr.Dataframe(headers=CHECKPOINT_HEADERS, value=[], interactive=False, wrap=True)
+    checkpoint_snapshot = gr.State(_empty_checkpoint_snapshot())
     with gr.Row():
         checkpoint_dropdown = gr.Dropdown(label="Checkpoint", choices=[], value=None)
         output_dir = gr.Textbox(label="输出目录", value="")
@@ -437,15 +524,30 @@ def build_checkpoint_evaluation_tab() -> None:
     refresh_ckpt_btn.click(
         fn=refresh_checkpoint_list,
         inputs=[manual_run_dir],
-        outputs=[checkpoint_table, manual_export_status, checkpoint_dropdown, checkpoint_detail, output_dir, output_name],
+        outputs=[
+            checkpoint_table,
+            manual_export_status,
+            checkpoint_dropdown,
+            checkpoint_detail,
+            output_dir,
+            output_name,
+            checkpoint_snapshot,
+        ],
     )
     checkpoint_dropdown.change(
         fn=checkpoint_selection_detail,
-        inputs=[manual_run_dir, checkpoint_dropdown],
+        inputs=[manual_run_dir, checkpoint_dropdown, checkpoint_snapshot],
         outputs=[checkpoint_detail, output_name],
     )
     export_selected_btn.click(
         fn=export_selected_checkpoint,
-        inputs=[manual_run_dir, checkpoint_dropdown, output_dir, output_name, overwrite_box],
+        inputs=[
+            manual_run_dir,
+            checkpoint_dropdown,
+            output_dir,
+            output_name,
+            overwrite_box,
+            checkpoint_snapshot,
+        ],
         outputs=[manual_export_status, manual_export_info],
     )

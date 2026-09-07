@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import torch
 
@@ -45,9 +46,12 @@ class CheckpointScanTest(unittest.TestCase):
             shutil.copy2(ckpt_dir / "checkpoint_10.pt", ckpt_dir / "checkpoint.pt")
             _write_inference(ckpt_dir / "inference_checkpoint_5.pt", ckpt_dir / "checkpoint_5.pt", 5)
 
-            items = smr.scan_trainer_checkpoints(run)
+            real_sha256 = smr.sha256_of_file
+            with mock.patch.object(smr, "sha256_of_file", wraps=real_sha256) as sha256:
+                items = smr.scan_trainer_checkpoints(run)
 
         self.assertEqual([item.name for item in items], ["checkpoint_5.pt", "checkpoint_10.pt", "checkpoint.pt"])
+        self.assertEqual(sha256.call_count, 3)
         alias = items[-1]
         self.assertTrue(alias.is_alias)
         self.assertEqual(alias.alias_of, "checkpoint_10.pt")
